@@ -300,3 +300,6 @@ details.more summary { cursor: pointer; color: var(--teal); font-weight: 700; mi
 .role-btn.on .ic { opacity: 1; }
 .add-role { display: grid; grid-template-columns: 1fr auto; gap: 10px; margin-bottom: 16px; }
 @media (max-width: 380px) { .role-grid { grid-template-columns: 1fr; } }
+
+.tab { position: relative; }
+.tab .dot { position: absolute; top: 8px; right: calc(50% - 20px); width: 12px; height: 12px; border-radius: 50%; background: var(--green); box-shadow: 0 0 0 2px #16202a; }

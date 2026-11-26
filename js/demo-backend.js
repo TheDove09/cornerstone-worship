@@ -59,6 +59,7 @@ export function createDemoApi() {
   const me = () => db.team.find(t => t.id === db.meId);
 
   return {
+    subscribe() { return () => {}; },
     async session() { return db.signedIn ? { demo: true } : null; },
     onAuth(cb) { listeners.push(cb); },
     async signIn(email) {

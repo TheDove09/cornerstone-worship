@@ -62,7 +62,7 @@ const I = {
 };
 const LOGO = `<img class="logo-mark" src="icons/logo-mark.png" alt="" aria-hidden="true">`;
 
-const state = { profile: null, renderId: 0 };
+const state = { profile: null, renderId: 0, quiet: false, stale: false, unread: false, updateReady: false };
 const isAdmin = () => state.profile?.role === 'admin';
 const root = $('#app');
 
@@ -95,7 +95,12 @@ function sheet(title, html, mount) {
   mount?.(el);
   return el;
 }
-function closeSheet() { $$('.sheet-wrap').forEach(s => s.remove()); document.body.classList.remove('no-scroll'); }
+function closeSheet() {
+  const wasOpen = $$('.sheet-wrap').length > 0;
+  $$('.sheet-wrap').forEach(s => s.remove());
+  document.body.classList.remove('no-scroll');
+  if (wasOpen && (state.stale || state.updateReady)) setTimeout(applyPending, 50);
+}
 
 function askYesNo(question, yesLabel = 'Yes', danger = false) {
   return new Promise(resolve => {
@@ -151,11 +156,12 @@ function frame({ tab, title, back, actions = '' }) {
       <h1>${esc(title)}</h1>
       <div class="top-actions">${actions}</div>
     </header>
-    <main id="main" class="page" tabindex="-1"><div class="loading"><span class="spinner"></span> Loading…</div></main>
+    <main id="main" class="page" tabindex="-1">${state.quiet && $('#main') ? $('#main').innerHTML : '<div class="loading"><span class="spinner"></span> Loading…</div>'}</main>
     <nav class="tabbar glass" aria-label="Main">
-      ${TABS.map(([k, label, icon, href]) => `<a href="${href}" class="tab ${k === tab ? 'active' : ''}" ${k === tab ? 'aria-current="page"' : ''}>${icon}<span>${label}</span></a>`).join('')}
+      ${TABS.map(([k, label, icon, href]) => `<a href="${href}" class="tab ${k === tab ? 'active' : ''}" ${k === tab ? 'aria-current="page"' : ''}>${icon}<span>${label}</span>${k === 'messages' && state.unread && tab !== 'messages' ? '<i class="dot" aria-label="new"></i>' : ''}</a>`).join('')}
     </nav>`;
-  window.scrollTo(0, 0);
+  if (tab === 'messages') state.unread = false;
+  if (!state.quiet) window.scrollTo(0, 0);
   return ++state.renderId;
 }
 const fill = (rid, html) => { if (rid !== state.renderId) return null; const m = $('#main'); m.innerHTML = html; return m; };
@@ -917,6 +923,58 @@ function rolesSheet(person) {
   });
 }
 
+// ── live updates ───────────────────────────────────────────────────
+// Someone is mid-task: a pop-up is open, they're typing, or searching songs.
+const userIsBusy = () => !!$('.sheet-wrap') || /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || '') || !!$('#q')?.value;
+
+async function refreshQuietly() {
+  if (!state.profile || state.profile.role === 'pending') return;
+  if (userIsBusy()) { state.stale = true; return; }
+  state.stale = false;
+  const y = window.scrollY;
+  state.quiet = true;
+  try { await route(); } finally { state.quiet = false; }
+  window.scrollTo(0, y);
+}
+
+function applyPending() {
+  if (state.updateReady && !userIsBusy()) { location.reload(); return; }
+  if (state.stale) refreshQuietly();
+}
+
+let liveTimer = null;
+function onLiveChange(table, payload) {
+  if (!state.profile || state.profile.role === 'pending') return;
+  if (table === 'messages' && payload.eventType === 'INSERT' && payload.new?.author_id !== state.profile.id) {
+    if (location.hash !== '#/messages') state.unread = true;
+    toast(`New message: ${payload.new?.title || 'from a leader'}`);
+  }
+  if (table === 'profiles' && (payload.new?.id === state.profile.id || payload.old?.id === state.profile.id)) {
+    api.me().then(p => {
+      const changed = p?.role !== state.profile.role;
+      state.profile = p;
+      if (changed) start(); else refreshQuietly();
+    }).catch(() => {});
+    return;
+  }
+  clearTimeout(liveTimer);
+  liveTimer = setTimeout(refreshQuietly, 700);   // bundle quick bursts of changes into one refresh
+}
+
+let stopLive = null;
+function startLive() {
+  if (stopLive || !state.profile || state.profile.role === 'pending') return;
+  stopLive = api.subscribe(onLiveChange);
+}
+function stopLiveUpdates() { if (stopLive) { stopLive(); stopLive = null; } }
+
+// Coming back to the app (phone unlocked, switched apps): catch up on anything missed.
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) return;
+  if (state.updateReady) return applyPending();
+  refreshQuietly();
+});
+
 // ── router & start ─────────────────────────────────────────────────
 const routes = [
   [/^\/songs$/, viewSongs], [/^\/songs\/([\w-]+)$/, viewSong],
@@ -928,7 +986,7 @@ function route() {
   closeSheet();
   const path = location.hash.replace(/^#/, '');
   for (const [re, fn] of routes) { const m = path.match(re); if (m) return fn(m[1]).catch(console.error); }
-  viewHome().catch(console.error);
+  return viewHome().catch(console.error);
 }
 function applyTextSize() { document.documentElement.dataset.size = store.get('textSize') || 'normal'; }
 
@@ -938,18 +996,32 @@ async function start() {
   try { state.profile = await api.me(); }
   catch (e) { authShell(`${errBox(e.message)}<button class="btn btn-primary btn-block" onclick="location.reload()">Try Again</button>`); return; }
   if (!state.profile) return viewLogin();
-  if (state.profile.role === 'pending') return viewUnlock();
+  if (state.profile.role === 'pending') { stopLiveUpdates(); return viewUnlock(); }
+  startLive();
   route();
 }
 
 applyTextSize();
 api.onAuth(event => {
   if (event === 'PASSWORD_RECOVERY') setTimeout(newPasswordSheet, 300);
-  if (event === 'SIGNED_OUT') { state.profile = null; viewLogin(); }
+  if (event === 'SIGNED_OUT') { stopLiveUpdates(); state.profile = null; viewLogin(); }
 });
 window.addEventListener('hashchange', route);
 start();
 
+// ── automatic app updates ──────────────────────────────────────────
+// When a new version is published, open apps switch to it by themselves
+// (right away, or as soon as the person finishes what they're typing).
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {
-  navigator.serviceWorker.register('./sw.js').catch(() => {});
+  const hadController = !!navigator.serviceWorker.controller;
+  navigator.serviceWorker.register('./sw.js').then(reg => {
+    setInterval(() => reg.update().catch(() => {}), 5 * 60 * 1000);
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) reg.update().catch(() => {}); });
+  }).catch(() => {});
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!hadController || state.updateReady) return;   // first install: nothing to update
+    state.updateReady = true;
+    if (userIsBusy()) toast('The app has an update. It will load when you finish.');
+    else location.reload();
+  });
 }

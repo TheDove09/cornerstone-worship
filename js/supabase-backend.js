@@ -31,6 +31,16 @@ export function createSupabaseApi(cfg) {
   const uid = async () => (await sb.auth.getUser()).data.user?.id;
 
   return {
+    // Live updates: the server tells the app the moment team data changes.
+    // The database's security rules still apply, so people only hear about rows they're allowed to see.
+    subscribe(cb) {
+      const ch = sb.channel('team-live');
+      for (const table of ['messages', 'services', 'service_songs', 'songs', 'profiles']) {
+        ch.on('postgres_changes', { event: '*', schema: 'public', table }, payload => cb(table, payload));
+      }
+      ch.subscribe();
+      return () => { sb.removeChannel(ch); };
+    },
     async session() { return (await sb.auth.getSession()).data.session; },
     onAuth(cb) { sb.auth.onAuthStateChange((event, session) => cb(event, session)); },
     async signIn(email, password) {
