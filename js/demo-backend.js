@@ -143,6 +143,12 @@ export function createDemoApi() {
         const n = { ...s, id: id(), created_at: new Date().toISOString() }; db.songs.push(n); save(); return clone(n);
       },
       saveMany: async list => { await wait(); list.forEach(s => db.songs.push({ songselect_url: '', notes: '', ...s, id: id(), created_at: new Date().toISOString() })); save(); return list.length; },
+      removeMany: async ids => {
+        const gone = new Set(ids);
+        db.songs = db.songs.filter(s => !gone.has(s.id));
+        db.services.forEach(v => { v.items = v.items.filter(i => !gone.has(i.song_id)); });
+        save();
+      },
       remove: async sid => {
         db.songs = db.songs.filter(s => s.id !== sid);
         db.services.forEach(v => { v.items = v.items.filter(i => i.song_id !== sid); });

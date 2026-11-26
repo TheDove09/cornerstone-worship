@@ -422,3 +422,25 @@ details.more summary { cursor: pointer; color: var(--teal); font-weight: 700; mi
 .pfp-preview { display: flex; justify-content: center; margin: 4px 0 18px; }
 .msg-meta { display: flex; align-items: center; gap: 8px; }
 .file-btn.busy { opacity: .7; pointer-events: none; }
+
+/* select songs */
+.sel-row { cursor: pointer; }
+.sel-box { flex: none; width: 30px; height: 30px; border-radius: 9px; display: grid; place-items: center; border: 2px solid rgba(255,255,255,.35); color: transparent; }
+.sel-box .ic { width: 20px; height: 20px; }
+.sel-row.on { border-color: var(--green); background: rgba(141,198,63,.14); }
+.sel-row.on .sel-box { background: var(--green); border-color: var(--green); color: #0b1a05; }
+.select-bar { position: fixed; z-index: 21; left: 50%; transform: translateX(-50%); bottom: calc(92px + var(--safe-b));
+  width: min(700px, calc(100% - 20px)); border-radius: 24px; padding: 10px 12px; display: flex; align-items: center; gap: 10px;
+  background: rgba(22,30,38,.94) !important; }
+.select-bar[hidden] { display: none; }
+.sel-count { flex: 1; font-weight: 700; font-size: .9rem; padding-left: 6px; }
+.sel-actions { display: flex; gap: 8px; }
+.sel-actions .btn { min-height: 50px; padding: 0 16px; }
+.sel-actions .btn:disabled { opacity: .45; }
+body.selecting .page { padding-bottom: calc(200px + var(--safe-b)); }
+@media (max-width: 359px) { .sel-actions .btn span { display: none; } .sel-actions .btn { width: 54px; padding: 0; } }
+.sel-count { font-size: .82rem; line-height: 1.25; }
+.sel-actions .btn { padding: 0 14px; font-size: .9rem; }
+
+/* "hidden" always wins over layout rules */
+[hidden] { display: none !important; }

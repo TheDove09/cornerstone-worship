@@ -174,6 +174,7 @@ export function createSupabaseApi(cfg) {
         return must(await sb.from('songs').insert(row).select().single());
       },
       remove: async id => { must(await sb.from('songs').delete().eq('id', id)); },
+      removeMany: async ids => { if (ids.length) must(await sb.from('songs').delete().in('id', ids)); },
       saveMany: async list => {
         let added = 0;
         for (let i = 0; i < list.length; i += 200) {

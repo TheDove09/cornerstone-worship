@@ -541,33 +541,97 @@ const msgCard = (m, names, people) => `<article class="msg">
 
 // ── SONGS ──────────────────────────────────────────────────────────
 async function viewSongs() {
-  const rid = frame({ tab: 'songs', title: 'Songs' });
+  const rid = frame({ tab: 'songs', title: 'Songs', actions: `<button class="btn btn-glass btn-sm" id="selbtn" aria-pressed="false">${I.check}<span>Select</span></button>` });
   const songs = await load(rid, () => api.songs.list());
   const m = fill(rid, `
-    ${isAdmin() ? `<div class="grid2 add-row">
+    ${isAdmin() ? `<div class="grid2 add-row" id="addrow">
       <button class="btn btn-primary" id="add">${I.plus}<span>Add a Song</span></button>
       <button class="btn btn-glass" id="addmany">${I.plus}<span>Add Many Songs</span></button></div>` : ''}
     <label class="search glass">${I.search}<input class="input" type="search" id="q" placeholder="Search songs or artists" aria-label="Search songs"></label>
-    <div id="count" class="muted small"></div>
-    <div id="list" class="list"></div>`);
+    <div class="row-between"><div id="count" class="muted small"></div><button class="btn btn-ghost btn-sm" id="selall" hidden>Select All</button></div>
+    <div id="list" class="list"></div>
+    <div class="select-bar glass" id="selbar" hidden role="toolbar" aria-label="Selected songs">
+      <div class="sel-count" id="selcount" aria-live="polite">0 selected</div>
+      <div class="sel-actions">
+        <button class="btn btn-primary" id="selshare" disabled>${I.share}<span>Share</span></button>
+        ${isAdmin() ? `<button class="btn btn-danger-ghost" id="seldel" disabled>${I.trash}<span>Delete</span></button>` : ''}
+      </div>
+    </div>`);
   if (!m) return;
-  $('#add')?.addEventListener('click', () => songEditor({ title: $('#q').value.trim() }));
-  $('#addmany')?.addEventListener('click', () => bulkAddSheet(songs));
-  $('#list').addEventListener('click', e => { if (e.target.closest('#addq')) songEditor({ title: $('#q').value.trim() }); });
+  let selecting = false;
+  const picked = new Set();
+  const visible = () => {
+    const q = $('#q').value.trim().toLowerCase();
+    return songs.filter(s => !q || `${s.title} ${s.artist} ${s.ccli_number}`.toLowerCase().includes(q));
+  };
+  const syncBar = () => {
+    const n = picked.size;
+    $('#selcount').textContent = n ? `${n} song${n === 1 ? '' : 's'} selected` : 'Tap songs to select them';
+    $('#selshare').disabled = !n;
+    if ($('#seldel')) $('#seldel').disabled = !n;
+    const vis = visible();
+    $('#selall').textContent = vis.length && vis.every(s => picked.has(s.id)) ? 'Unselect All' : 'Select All';
+  };
+  const setSelecting = on => {
+    selecting = on; if (!on) picked.clear();
+    const b = $('#selbtn');
+    b.innerHTML = on ? `${I.x}<span>Done</span>` : `${I.check}<span>Select</span>`;
+    b.setAttribute('aria-pressed', on);
+    $('#selbar').hidden = !on; $('#selall').hidden = !on;
+    if ($('#addrow')) $('#addrow').hidden = on;
+    document.body.classList.toggle('selecting', on);
+    draw(); syncBar();
+  };
   const draw = () => {
     const q = $('#q').value.trim().toLowerCase();
-    const hits = songs.filter(s => !q || `${s.title} ${s.artist} ${s.ccli_number}`.toLowerCase().includes(q));
+    const hits = visible();
     $('#count').textContent = `${hits.length} song${hits.length === 1 ? '' : 's'}`;
-    $('#list').innerHTML = hits.length ? hits.map(s => `
-      <a class="row glass" href="#/songs/${s.id}">
-        <div class="row-main"><div class="row-title">${esc(s.title)}</div><div class="row-sub">${esc(s.artist || '')}${s.has_chart ? `${s.artist ? ' · ' : ''}<span class="chart-tag">${I.chart}Chart</span>` : ''}</div></div>
-        ${keyPill(s.default_key)}
-      </a>`).join('') : `<p class="empty">${songs.length ? `“${esc($('#q').value.trim())}” isn't in our list yet.` : 'No songs yet.' + (isAdmin() ? ' Tap “Add Many Songs” to bring in your whole list at once.' : '')}</p>`
-      + (q ? `<div class="stack">
+    const row = s => selecting
+      ? `<button type="button" class="row glass sel-row ${picked.has(s.id) ? 'on' : ''}" data-sel="${s.id}" role="checkbox" aria-checked="${picked.has(s.id)}">
+          <span class="sel-box">${I.check}</span>
+          <div class="row-main"><div class="row-title">${esc(s.title)}</div><div class="row-sub">${esc(s.artist || '')}</div></div>
+          ${keyPill(s.default_key)}</button>`
+      : `<a class="row glass" href="#/songs/${s.id}">
+          <div class="row-main"><div class="row-title">${esc(s.title)}</div><div class="row-sub">${esc(s.artist || '')}${s.has_chart ? `${s.artist ? ' · ' : ''}<span class="chart-tag">${I.chart}Chart</span>` : ''}</div></div>
+          ${keyPill(s.default_key)}</a>`;
+    $('#list').innerHTML = hits.length ? hits.map(row).join('') : `<p class="empty">${songs.length ? `“${esc($('#q').value.trim())}” isn't in our list yet.` : 'No songs yet.' + (isAdmin() ? ' Tap “Add Many Songs” to bring in your whole list at once.' : '')}</p>`
+      + (q && !selecting ? `<div class="stack">
           <a class="btn btn-glass btn-block" target="_blank" rel="noopener" href="https://songselect.ccli.com/search/results?search=${encodeURIComponent($('#q').value.trim())}">${I.ext}<span>Search SongSelect</span></a>
           ${isAdmin() ? `<button class="btn btn-primary btn-block" id="addq">${I.plus}<span>Add “${esc($('#q').value.trim())}”</span></button>` : ''}</div>` : '');
   };
-  $('#q').addEventListener('input', draw);
+  $('#add')?.addEventListener('click', () => songEditor({ title: $('#q').value.trim() }));
+  $('#addmany')?.addEventListener('click', () => bulkAddSheet(songs));
+  $('#selbtn').onclick = () => setSelecting(!selecting);
+  $('#list').addEventListener('click', e => {
+    if (e.target.closest('#addq')) return songEditor({ title: $('#q').value.trim() });
+    const r = e.target.closest('[data-sel]'); if (!r) return;
+    picked.has(r.dataset.sel) ? picked.delete(r.dataset.sel) : picked.add(r.dataset.sel);
+    const on = picked.has(r.dataset.sel);
+    r.classList.toggle('on', on); r.setAttribute('aria-checked', on);
+    syncBar();
+  });
+  $('#selall').onclick = () => {
+    const vis = visible(), all = vis.length && vis.every(s => picked.has(s.id));
+    vis.forEach(s => all ? picked.delete(s.id) : picked.add(s.id));
+    draw(); syncBar();
+  };
+  $('#selshare').onclick = () => {
+    const list = songs.filter(s => picked.has(s.id));
+    const text = ['🎵 Songs', '', ...list.map((s, i) => `${i + 1}. ${s.title}${s.artist ? ` — ${s.artist}` : ''}${s.default_key ? ` (Key of ${s.default_key})` : ''}`),
+      '', `— ${CONFIG.CHURCH_NAME} ${CONFIG.TEAM_NAME}`].join('\n');
+    shareText(`${list.length} songs`, text);
+  };
+  $('#seldel')?.addEventListener('click', async e => {
+    const n = picked.size;
+    if (!(await askYesNo(`Delete ${n} song${n === 1 ? '' : 's'}? ${n === 1 ? 'It' : 'They'}'ll also be removed from any set lists. This can't be undone.`, `Yes, Delete ${n === 1 ? 'It' : `All ${n}`}`, true))) return;
+    try {
+      await api.songs.removeMany([...picked]);
+      toast(`Deleted ${n} song${n === 1 ? '' : 's'}.`);
+      document.body.classList.remove('selecting');
+      viewSongs();
+    } catch (err) { toast(err.message, 'bad'); }
+  });
+  $('#q').addEventListener('input', () => { draw(); if (selecting) syncBar(); });
   draw();
 }
 
@@ -1297,7 +1361,7 @@ async function viewPlay(svcId, idx) {
 
 // ── live updates ───────────────────────────────────────────────────
 // Someone is mid-task: a pop-up is open, they're typing, or searching songs.
-const userIsBusy = () => !!$('.sheet-wrap') || /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || '') || !!$('#q')?.value;
+const userIsBusy = () => !!$('.sheet-wrap') || document.body.classList.contains('selecting') || /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || '') || !!$('#q')?.value;
 
 async function refreshQuietly() {
   if (locked()) return;
@@ -1357,6 +1421,7 @@ const routes = [
 ];
 function route() {
   if (locked()) return;
+  document.body.classList.remove('selecting');
   closeSheet();
   const path = location.hash.replace(/^#/, '');
   for (const [re, fn] of routes) { const m = path.match(re); if (m) return fn(...m.slice(1)).catch(console.error); }
