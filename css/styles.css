@@ -403,3 +403,7 @@ details.more summary { cursor: pointer; color: var(--teal); font-weight: 700; mi
 #security .ok-line { margin-bottom: 10px; }
 #security > .btn-block + .btn-block, #security > .pk-list + .btn-block { margin-top: 10px; }
 .small-load { padding: 16px 0; }
+
+.pk-status { display: inline-flex; align-items: center; gap: 6px; margin-top: 8px; font-size: .78rem; font-weight: 700; color: var(--muted); }
+.pk-status .ic { width: 15px; height: 15px; }
+.pk-status.on { color: #c4ef8b; }

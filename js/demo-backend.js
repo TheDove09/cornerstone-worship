@@ -85,7 +85,7 @@ Public Domain`, 'D'),
   const messages = [
     { id: id(), title: 'Rehearsal moved to Thursday', body: 'Hi team! This week rehearsal is Thursday at 7 PM instead of Wednesday. See you there!', service_id: null, author_name: 'Linda (Co-Leader)', created_at: new Date(Date.now() - 36e5 * 5).toISOString() },
   ];
-  return { songs, services: [svc1, svc2], messages, team, meId: me.id };
+  return { songs, services: [svc1, svc2], messages, team, meId: me.id, teamPk: [team[3].id] };
 }
 
 export function createDemoApi() {
@@ -116,20 +116,12 @@ export function createDemoApi() {
     async resetPassword() { await wait(); },
     async updatePassword() { await wait(); },
     async me() { return clone(me()); },
-    async security() { return { required: !!db.require2fa, verified: !!db.verified, passkeys: (db.passkeys || []).length }; },
-    async sendCode() { await wait(); return { to: 'jo•••@example.com' }; },
-    async verifyCode(code) {
-      await wait();
-      if (!/^\d{6}$/.test(code)) throw new Error('Please type all 6 numbers.');
-      if (code === '000000') throw new Error("That code isn't right. You have 4 tries left.");
-      db.verified = true; save();
-    },
+    async security() { const n = (db.passkeys || []).length; return { required: n > 0, verified: n > 0 && !!db.verified, passkeys: n }; },
     async passkeyReady() { return true; },
-    async addPasskey(name) { await wait(); db.passkeys = [...(db.passkeys || []), { id: id(), device_name: name, created_at: new Date().toISOString(), last_used_at: null }]; save(); },
+    async addPasskey(name) { await wait(); db.passkeys = [...(db.passkeys || []), { id: id(), device_name: name, created_at: new Date().toISOString(), last_used_at: null }]; db.verified = true; save(); },
     async usePasskey() { await wait(); db.verified = true; save(); },
     async listPasskeys() { return clone(db.passkeys || []); },
     async removePasskey(pid) { db.passkeys = (db.passkeys || []).filter(k => k.id !== pid); save(); },
-    async setRequire2fa(on) { if (on && !db.verified) throw new Error('Please confirm a code from your email first.'); db.require2fa = on; save(); },
     async joinTeam() { await wait(); me().role = me().role === 'admin' ? 'admin' : 'member'; save(); },
     async setTeamSecret(email) { await wait(); db.secret = { ccli_email: email, updated_at: new Date().toISOString() }; save(); },
     async teamSecretStatus() { return db.secret || null; },
@@ -182,6 +174,8 @@ export function createDemoApi() {
         t.role = role; save();
       },
       setPositions: async (tid, positions) => { db.team.find(x => x.id === tid).positions = positions; save(); },
+      passkeyCounts: async () => [...(db.passkeys?.length ? [{ user_id: db.meId, devices: db.passkeys.length }] : []), ...(db.teamPk || []).map(u => ({ user_id: u, devices: 1 }))],
+      resetPasskeys: async tid => { db.teamPk = (db.teamPk || []).filter(u => u !== tid); save(); },
     },
   };
 }

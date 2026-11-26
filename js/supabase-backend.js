@@ -27,7 +27,7 @@ function normalizeService(s) {
 
 const WEBAUTHN = 'https://cdn.jsdelivr.net/npm/@simplewebauthn/browser@13.1.0/+esm';
 function passkeyError(e) {
-  if (e?.name === 'NotAllowedError') return new Error("Face ID / Touch ID was cancelled or didn't match. Try again, or use an email code.");
+  if (e?.name === 'NotAllowedError') return new Error("Face ID / Touch ID was cancelled or didn't match. Please try again.");
   if (e?.name === 'InvalidStateError') return new Error('This device is already set up for Face ID / Touch ID.');
   return e;
 }
@@ -74,13 +74,11 @@ export function createSupabaseApi(cfg) {
     async resetPassword(email) { must(await sb.auth.resetPasswordForEmail(email, { redirectTo: appUrl() })); },
     async updatePassword(password) { must(await sb.auth.updateUser({ password })); },
 
-    // ── two-step sign-in ──
+    // ── Face ID / Touch ID ──
     async security() {
       const rows = must(await sb.rpc('my_security'));
       return rows?.[0] || { required: false, verified: false, passkeys: 0 };
     },
-    sendCode: () => guard('send-code'),
-    verifyCode: code => guard('verify-code', { code }),
     async passkeyReady() {
       try { return !!window.PublicKeyCredential && await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable(); }
       catch { return false; }
@@ -99,7 +97,6 @@ export function createSupabaseApi(cfg) {
     },
     listPasskeys: async () => must(await sb.from('passkeys').select('id, device_name, created_at, last_used_at').order('created_at')),
     removePasskey: async id => { must(await sb.from('passkeys').delete().eq('id', id)); },
-    setRequire2fa: async on => { must(await sb.rpc('set_require_2fa', { p_on: on })); },
 
     async me() {
       const id = await uid();
@@ -184,6 +181,8 @@ export function createSupabaseApi(cfg) {
       list: async () => must(await sb.from('profiles').select('*').order('full_name')),
       setRole: async (id, role) => { must(await sb.from('profiles').update({ role }).eq('id', id)); },
       setPositions: async (id, positions) => { must(await sb.from('profiles').update({ positions }).eq('id', id)); },
+      passkeyCounts: async () => must(await sb.rpc('team_passkey_counts')) || [],
+      resetPasskeys: async id => { must(await sb.rpc('reset_passkeys', { p_user: id })); },
     },
   };
 }
