@@ -66,9 +66,17 @@ Deno.serve(async req => {
         const transport = nodemailer.createTransport({ host: 'smtp.gmail.com', port: 465, secure: true, auth: { user: GMAIL_USER, pass: GMAIL_APP_PASSWORD } });
         try {
           await transport.sendMail({ from: `"Cornerstone Worship" <${GMAIL_USER}>`, to: user.email, subject: mail.subject, text: mail.text, html: mail.html });
-        } catch (e) {
-          console.error('gmail send failed', e);
-          throw new Oops(502, "We couldn't send the email just now. Please try again in a minute.");
+        } catch (e: any) {
+          console.error('gmail send failed', e?.code, e?.responseCode, e?.message);
+          const why = `${e?.code || ''} ${e?.responseCode || ''} ${e?.message || ''}`;
+          if (/EAUTH|535|534|Username and Password not accepted|Application-specific password required|BadCredentials/i.test(why)) {
+            throw new Oops(502, 'Gmail did not accept the App Password. Make a new App Password while signed in as ' + GMAIL_USER +
+              ', then paste all 16 letters into the GMAIL_APP_PASSWORD secret in Supabase. (Gmail said: ' + String(e?.response || e?.message || '').slice(0, 120) + ')');
+          }
+          if (/ECONNECTION|ETIMEDOUT|ECONNREFUSED|ESOCKET|ENOTFOUND|connect|timeout|tls|certificate/i.test(why)) {
+            throw new Oops(502, "The server couldn't connect to Gmail to send the email. (Details: " + String(e?.code || e?.message || '').slice(0, 120) + ')');
+          }
+          throw new Oops(502, "We couldn't send the email. (Details: " + String(e?.message || e).slice(0, 160) + ')');
         }
         must(await db.from('login_codes').upsert({
           user_id: user.id, code_hash: await hashCode(SERVICE_KEY, user.id, code),
