@@ -349,7 +349,7 @@ async function viewHome() {
     </section>
     ${isAdmin() ? `<section class="glass card">
       <div class="eyebrow">Leader Tools</div>
-      <div class="grid2">
+      <div class="grid2 tools">
         <button class="btn btn-glass tall" data-a="plan">${I.cal}<span>Plan a Service</span></button>
         <button class="btn btn-glass tall" data-a="msg">${I.send}<span>Send a Message</span></button>
         <button class="btn btn-glass tall" data-a="song">${I.plus}<span>Add a Song</span></button>
@@ -412,7 +412,7 @@ async function viewSong(id) {
       <h2 class="song-title">${esc(s.title)}</h2>
       ${s.artist ? `<div class="muted big">${esc(s.artist)}</div>` : ''}
       <div class="facts">
-        <div class="fact"><span>Usual Key</span><b>${esc(s.default_key || '—')}</b></div>
+        <div class="fact"><span>Key</span><b>${esc(s.default_key || '—')}</b></div>
         <div class="fact"><span>Tempo</span><b>${s.tempo ? esc(s.tempo) + ' bpm' : '—'}</b></div>
         <div class="fact"><span>Time</span><b>${esc(s.time_signature || '—')}</b></div>
         <div class="fact"><span>CCLI #</span><b>${esc(s.ccli_number || '—')}</b></div>

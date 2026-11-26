@@ -1,6 +1,6 @@
 // Offline support: keeps the app's look & screens on the device.
 // Team data (songs, set lists) always comes fresh from the server.
-const CACHE = 'cmc-worship-v6';
+const CACHE = 'cmc-worship-v7';
 const SHELL = ['./', './index.html', './css/styles.css', './js/app.js', './js/data.js', './js/config.js',
   './js/demo-backend.js', './js/supabase-backend.js', './js/song-import.js', './manifest.webmanifest', './icons/logo-mark.png', './icons/icon-192.png'];
 
