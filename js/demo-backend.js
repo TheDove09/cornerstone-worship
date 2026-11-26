@@ -172,6 +172,14 @@ export function createDemoApi() {
       post: async m => { const n = { ...m, recipient_ids: m.recipient_ids && m.recipient_ids.length ? m.recipient_ids : null, author_id: db.meId, id: id(), created_at: new Date().toISOString() }; db.messages.push(n); save(); return clone(n); },
       remove: async mid => { db.messages = db.messages.filter(m => m.id !== mid); save(); },
     },
+    avatars: {
+      async upload(blob) {
+        const url = await new Promise(r => { const fr = new FileReader(); fr.onload = () => r(fr.result); fr.readAsDataURL(blob); });
+        db.avatars = { ...(db.avatars || {}), [db.meId]: url }; me().avatar_version = Date.now(); save(); return me().avatar_version;
+      },
+      async remove() { if (db.avatars) delete db.avatars[db.meId]; me().avatar_version = null; save(); },
+      async urls(people) { const out = {}; people.forEach(p => { if (p.avatar_version && db.avatars?.[p.id]) out[p.id] = db.avatars[p.id]; }); return out; },
+    },
     team: {
       list: async () => { await wait(); return clone(db.team).sort((a, b) => a.full_name.localeCompare(b.full_name)); },
       setRole: async (tid, role) => {

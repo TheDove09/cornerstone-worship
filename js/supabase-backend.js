@@ -222,6 +222,32 @@ export function createSupabaseApi(cfg) {
       remove: async id => { must(await sb.from('messages').delete().eq('id', id)); },
     },
 
+    // ── profile pictures (private: only signed-in team members can see them) ──
+    avatars: {
+      async upload(blob) {
+        const id = await uid();
+        must(await sb.storage.from('avatars').upload(`${id}.jpg`, blob, { upsert: true, contentType: 'image/jpeg', cacheControl: '3600' }));
+        const v = Date.now();
+        must(await sb.from('profiles').update({ avatar_version: v }).eq('id', id));
+        return v;
+      },
+      async remove() {
+        const id = await uid();
+        await sb.storage.from('avatars').remove([`${id}.jpg`]);
+        must(await sb.from('profiles').update({ avatar_version: null }).eq('id', id));
+      },
+      // Short-lived private links for the people's photos we need to show.
+      async urls(people) {
+        const want = people.filter(p => p.avatar_version);
+        if (!want.length) return {};
+        const { data, error } = await sb.storage.from('avatars').createSignedUrls(want.map(p => `${p.id}.jpg`), 60 * 60 * 12);
+        if (error) return {};
+        const out = {};
+        (data || []).forEach((d, i) => { if (d.signedUrl) out[want[i].id] = d.signedUrl + `&v=${want[i].avatar_version}`; });
+        return out;
+      },
+    },
+
     team: {
       list: async () => must(await sb.from('profiles').select('*').order('full_name')),
       setRole: async (id, role) => { must(await sb.from('profiles').update({ role }).eq('id', id)); },

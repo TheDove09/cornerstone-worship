@@ -473,10 +473,66 @@ async function viewHome() {
   $('[data-a=song]', m)?.addEventListener('click', () => songEditor());
 }
 
-const msgCard = (m, names) => `<article class="msg">
+// ── profile pictures ──
+const avatarCache = {};   // person id -> { v, url }
+async function loadAvatars(people) {
+  const need = people.filter(p => p?.avatar_version && avatarCache[p.id]?.v !== p.avatar_version);
+  if (!need.length) return;
+  const urls = await api.avatars.urls(need).catch(() => ({}));
+  need.forEach(p => { if (urls[p.id]) avatarCache[p.id] = { v: p.avatar_version, url: urls[p.id] }; });
+}
+const avatarHTML = (p, cls = '') => {
+  const a = p && p.avatar_version && avatarCache[p.id];
+  return a ? `<div class="avatar ${cls}"><img src="${esc(a.url)}" alt="" loading="lazy"></div>`
+           : `<div class="avatar ${cls}">${esc(((p && p.full_name) || '?').trim()[0]?.toUpperCase() || '?')}</div>`;
+};
+// Crop the middle square of a photo and shrink it, so uploads are small and fast.
+async function squarePhoto(file, size = 320) {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise((ok, bad) => { const i = new Image(); i.onload = () => ok(i); i.onerror = () => bad(new Error("That photo couldn't be opened. Please try a different one.")); i.src = url; });
+    const s = Math.min(img.naturalWidth, img.naturalHeight);
+    const c = document.createElement('canvas'); c.width = c.height = size;
+    c.getContext('2d').drawImage(img, (img.naturalWidth - s) / 2, (img.naturalHeight - s) / 2, s, s, 0, 0, size, size);
+    return await new Promise(ok => c.toBlob(ok, 'image/jpeg', 0.85));
+  } finally { URL.revokeObjectURL(url); }
+}
+function photoSheet() {
+  const has = !!state.profile.avatar_version;
+  sheet('Profile picture', `
+    <div class="pfp-preview">${avatarHTML(state.profile, 'xl')}</div>
+    <div class="stack">
+      <label class="btn btn-primary btn-block btn-lg file-btn">${I.user}<span>${has ? 'Choose a New Photo' : 'Choose a Photo'}</span>
+        <input type="file" id="pfpfile" accept="image/*" hidden></label>
+      <div id="pfperr"></div>
+      ${has ? `<button class="btn btn-danger-ghost btn-block" id="pfpdel">${I.trash}<span>Remove My Photo</span></button>` : ''}
+      <p class="muted small center">Your photo shows on your messages and the team list. Only signed-in team members can see it.</p>
+    </div>`, el => {
+    $('#pfpfile', el).addEventListener('change', async e => {
+      const file = e.target.files[0]; if (!file) return;
+      const label = el.querySelector('.file-btn');
+      label.classList.add('busy'); label.querySelector('span').textContent = 'Uploading…';
+      try {
+        const blob = await squarePhoto(file);
+        state.profile.avatar_version = await api.avatars.upload(blob);
+        delete avatarCache[state.profile.id];
+        closeSheet(); toast('Photo saved!'); viewMe();
+      } catch (err) {
+        $('#pfperr', el).innerHTML = errBox(err.message);
+        label.classList.remove('busy'); label.querySelector('span').textContent = 'Try Another Photo';
+      }
+    });
+    $('#pfpdel', el)?.addEventListener('click', e => busy(e.currentTarget, async () => {
+      try { await api.avatars.remove(); state.profile.avatar_version = null; delete avatarCache[state.profile.id]; closeSheet(); toast('Photo removed.'); viewMe(); }
+      catch (err) { toast(err.message, 'bad'); }
+    }));
+  });
+}
+
+const msgCard = (m, names, people) => `<article class="msg">
   <div class="msg-title">${esc(m.title)}</div>
   ${m.body ? `<div class="msg-body">${nl2br(m.body)}</div>` : ''}
-  <div class="msg-meta">${esc(m.author_name || 'Leader')} · ${esc(timeAgo(m.created_at))}</div>
+  <div class="msg-meta">${people && m.author_id && people[m.author_id] ? avatarHTML(people[m.author_id], 'xs') : ''}<span>${esc(m.author_name || 'Leader')} · ${esc(timeAgo(m.created_at))}</span></div>
   ${m.recipient_ids ? `<div class="msg-to">${I.lock}<span>${names
     ? 'To: ' + esc(m.recipient_ids.map(id => names[id] || 'someone').join(', '))
     : 'Private message'}</span></div>` : ''}
@@ -817,7 +873,9 @@ async function viewMessages() {
   $('#add')?.addEventListener('click', () => messageEditor());
   const [msgs, team] = await load(rid, () => Promise.all([api.messages.list(), api.team.list()]));
   const names = Object.fromEntries(team.map(t => [t.id, t.id === state.profile.id ? 'You' : t.full_name]));
-  const m = fill(rid, msgs.length ? `<div class="stack">${msgs.map(x => `<div class="glass card">${msgCard(x, names)}
+  const people = Object.fromEntries(team.map(t => [t.id, t]));
+  await loadAvatars(team.filter(t => msgs.some(x => x.author_id === t.id)));
+  const m = fill(rid, msgs.length ? `<div class="stack">${msgs.map(x => `<div class="glass card">${msgCard(x, names, people)}
       <button class="btn btn-danger-ghost btn-sm" data-del="${x.id}">${I.trash}<span>Delete</span></button></div>`).join('')}</div>`
     : `<p class="empty">No messages yet.</p>`);
   m?.addEventListener('click', e => {
@@ -943,9 +1001,10 @@ async function viewMe() {
   const size = store.get('textSize') || 'normal';
   let secret = null;
   if (isAdmin()) { try { secret = await api.teamSecretStatus(); } catch {} }
+  await loadAvatars([p]);
   const m = fill(rid, `
     <section class="glass card">
-      <div class="me-head"><div class="avatar">${esc(firstName(p.full_name)[0]?.toUpperCase() || '?')}</div>
+      <div class="me-head"><button class="avatar-btn" id="pfp" aria-label="Change profile picture">${avatarHTML(p)}<span class="pfp-edit">${I.edit}</span></button>
         <div><div class="row-title">${esc(p.full_name || 'No name')}</div><div class="row-sub">${esc(p.email)}</div>
         <span class="role-tag ${p.role}">${p.role === 'admin' ? 'Leader' : 'Team Member'}</span>${roleChips(p.positions)}</div></div>
       <button class="btn btn-glass btn-block" id="rename">${I.edit}<span>Change My Name</span></button>
@@ -982,6 +1041,7 @@ async function viewMe() {
     <p class="muted small center">${esc(CONFIG.CHURCH_NAME)} · ${esc(CONFIG.TEAM_NAME)}</p>`);
   if (!m) return;
   $$('[data-size]', m).forEach(b => b.onclick = () => { store.set('textSize', b.dataset.size); applyTextSize(); viewMe(); });
+  $('#pfp', m).onclick = photoSheet;
   drawSecurity(rid);
   drawNotify(rid);
   $('#install')?.addEventListener('click', async () => { await installPrompt.prompt(); installPrompt = null; viewMe(); });
@@ -1051,9 +1111,10 @@ async function viewTeam() {
   const rid = frame({ tab: 'me', title: 'Team Members', back: '#/me' });
   const [team, pkCounts] = await load(rid, () => Promise.all([api.team.list(), api.team.passkeyCounts()]));
   const hasPk = Object.fromEntries(pkCounts.map(r => [r.user_id, r.devices]));
+  await loadAvatars(team);
   const group = (label, list, empty) => `<h2 class="section-h">${label} <span class="count">${list.length}</span></h2>
     <div class="stack">${list.length ? list.map(t => `<div class="glass card person">
-      <div class="me-head"><div class="avatar sm">${esc((t.full_name || '?')[0].toUpperCase())}</div>
+      <div class="me-head">${avatarHTML(t, 'sm')}
         <div class="row-main"><div class="row-title">${esc(t.full_name || '(no name)')}${t.id === state.profile.id ? ' <span class="muted small">(you)</span>' : ''}</div>
         <div class="row-sub">${esc(t.email)}</div>
         ${roleChips(t.positions) || '<div class="muted small">No roles yet</div>'}
