@@ -1,6 +1,7 @@
 import { api, DEMO } from './data.js';
 import { CONFIG } from './config.js';
 import { parseSongs, parseSongSelectUrl, dedupe } from './song-import.js';
+import { renderChart, detectKey, shiftKey, capoOptions } from './chart.js';
 
 // ── helpers ────────────────────────────────────────────────────────
 const $ = (s, r = document) => r.querySelector(s);
@@ -58,6 +59,8 @@ const I = {
   lock: svg('<rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>'),
   people: svg('<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><circle cx="17" cy="9" r="2.5"/><path d="M16 14.2a5 5 0 0 1 5.5 5.8"/>'),
   check: svg('<path d="M20 6 9 17l-5-5"/>'),
+  chart: svg('<path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6"/><path d="M9 17v-5l5-1v4"/><circle cx="8" cy="17" r="1.3"/><circle cx="13" cy="15" r="1.3"/>'),
+  next: svg('<path d="M9 18l6-6-6-6"/>'),
   phone: svg('<rect x="6" y="2" width="12" height="20" rx="2.5"/><path d="M11 18h2"/>'),
 };
 const LOGO = `<img class="logo-mark" src="icons/logo-mark.png" alt="" aria-hidden="true">`;
@@ -393,7 +396,7 @@ async function viewSongs() {
     $('#count').textContent = `${hits.length} song${hits.length === 1 ? '' : 's'}`;
     $('#list').innerHTML = hits.length ? hits.map(s => `
       <a class="row glass" href="#/songs/${s.id}">
-        <div class="row-main"><div class="row-title">${esc(s.title)}</div><div class="row-sub">${esc(s.artist || '')}</div></div>
+        <div class="row-main"><div class="row-title">${esc(s.title)}</div><div class="row-sub">${esc(s.artist || '')}${s.has_chart ? `${s.artist ? ' · ' : ''}<span class="chart-tag">${I.chart}Chart</span>` : ''}</div></div>
         ${keyPill(s.default_key)}
       </a>`).join('') : `<p class="empty">${songs.length ? `“${esc($('#q').value.trim())}” isn't in our list yet.` : 'No songs yet.' + (isAdmin() ? ' Tap “Add Many Songs” to bring in your whole list at once.' : '')}</p>`
       + (q ? `<div class="stack">
@@ -417,8 +420,9 @@ async function viewSong(id) {
         <div class="fact"><span>Time</span><b>${esc(s.time_signature || '—')}</b></div>
         <div class="fact"><span>CCLI #</span><b>${esc(s.ccli_number || '—')}</b></div>
       </div>
-      <a class="btn btn-primary btn-block btn-lg" href="${esc(songSelectUrl(s))}" target="_blank" rel="noopener">${I.ext}<span>Open in SongSelect</span></a>
-      <p class="muted small center">Chord charts &amp; lyrics open in SongSelect using the church CCLI account.</p>
+      <a class="btn ${s.chart ? 'btn-primary' : 'btn-glass'} btn-block btn-lg" href="#/chart/${s.id}">${I.chart}<span>${s.chart ? 'Chord Chart (any key)' : 'Chord Chart'}</span></a>
+      <a class="btn ${s.chart ? 'btn-glass' : 'btn-primary'} btn-block" href="${esc(songSelectUrl(s))}" target="_blank" rel="noopener">${I.ext}<span>Open in SongSelect</span></a>
+      <p class="muted small center">Full sheet music opens in SongSelect using the church CCLI account.</p>
       <button class="btn btn-glass btn-block" id="sharekey">${I.share}<span>Share the Key With the Team</span></button>
     </section>
     ${s.notes ? `<section class="glass card"><div class="eyebrow">Notes</div><div class="notes">${nl2br(s.notes)}</div></section>` : ''}
@@ -510,6 +514,14 @@ function songEditor(s = {}) {
       <label class="field"><span>Time signature</span><select class="input" name="time_signature"><option value="">—</option>${['4/4', '3/4', '6/8', '2/4', '12/8'].map(t => `<option ${t === s.time_signature ? 'selected' : ''}>${t}</option>`).join('')}</select></label>
       <label class="field"><span>SongSelect link (optional)</span><input class="input" name="songselect_url" type="url" value="${esc(s.songselect_url)}" placeholder="Paste the song's SongSelect web address"></label>
       <label class="field"><span>Notes for the team</span><textarea class="input" name="notes" rows="3">${esc(s.notes)}</textarea></label>
+      <div class="chart-edit" id="chartedit">
+        <div class="eyebrow">Chord chart</div>
+        <p class="muted small">In SongSelect, open the song, tap <b>Chord Sheet</b>, then <b>Download</b> (ChordPro or text), or copy the chart. Upload or paste it here. The app can change it to any key.</p>
+        <label class="btn btn-glass btn-block file-btn">${I.plus}<span>Choose a chart file</span>
+          <input type="file" id="chartfile" accept=".txt,.cho,.chopro,.chordpro,.pro,.crd,text/plain" hidden></label>
+        <textarea class="input mono" name="chart" rows="10" aria-label="Chord chart" placeholder="Paste the chord chart here">${esc(s.chart || '')}</textarea>
+        <label class="field"><span>This chart is written in the key of</span><select class="input" name="chart_key">${keyOptions(s.chart_key)}</select></label>
+      </div>
       <div id="serr"></div>
       <button class="btn btn-primary btn-block btn-lg">${s.id ? 'Save Changes' : 'Add Song'}</button>
     </form>`, el => {
@@ -523,6 +535,18 @@ function songEditor(s = {}) {
       toast('Filled in from SongSelect!');
       (f.artist.value ? f.default_key : f.artist).focus();
     });
+    const guessKey = () => {
+      const k = detectKey(f.chart.value);
+      if (k && KEYS.includes(k) && !f.chart_key.value) f.chart_key.value = k;
+      if (k && KEYS.includes(k) && !f.default_key.value) f.default_key.value = k;
+    };
+    f.chart.addEventListener('change', guessKey);
+    f.chart.addEventListener('paste', () => setTimeout(guessKey, 50));
+    $('#chartfile', el).addEventListener('change', async e => {
+      const file = e.target.files[0]; if (!file) return;
+      f.chart.value = await file.text(); guessKey(); toast(`Opened ${file.name}`);
+    });
+    if (s._focusChart) setTimeout(() => $('#chartedit', el).scrollIntoView({ behavior: 'smooth', block: 'start' }), 300);
     f.onsubmit = async e => {
       e.preventDefault();
       const d = Object.fromEntries(new FormData(f));
@@ -532,6 +556,7 @@ function songEditor(s = {}) {
       if (d.songselect_url && !/^https:\/\//i.test(d.songselect_url)) return ($('#serr', el).innerHTML = errBox('The SongSelect link should start with https://'));
       await busy(f.querySelector('.btn-primary'), async () => {
         try {
+          if (d.chart && !d.chart_key) d.chart_key = detectKey(d.chart);
           const saved = await api.songs.save({ ...d, id: s.id });
           closeSheet(); toast(s.id ? 'Song saved!' : 'Song added!');
           if (location.hash === `#/songs/${saved.id}`) route(); else location.hash = `#/songs/${saved.id}`;
@@ -570,14 +595,16 @@ async function viewService(id) {
     <ol class="setlist">
       ${svc.items.length ? svc.items.map((it, i) => `<li class="glass set-item">
         <div class="num">${i + 1}</div>
-        <a class="set-main" href="#/songs/${it.song_id}"><div class="row-title">${esc(it.song?.title)}</div>
+        <a class="set-main" href="#/play/${svc.id}/${i}"><div class="row-title">${esc(it.song?.title)}</div>
           ${it.song?.artist ? `<div class="row-sub">${esc(it.song.artist)}</div>` : ''}
-          ${it.notes ? `<div class="set-note">${esc(it.notes)}</div>` : ''}</a>
+          ${it.notes ? `<div class="set-note">${esc(it.notes)}</div>` : ''}
+          ${it.song?.chart ? `<div class="chart-tag">${I.chart}Tap for chord chart</div>` : ''}</a>
         <div class="big-key"><span>Key</span><b>${esc(keyOf(it) || '—')}</b></div>
       </li>`).join('') : `<p class="empty">No songs have been added yet.</p>`}
     </ol>
     <div class="stack">
-      <button class="btn btn-primary btn-block btn-lg" id="share">${I.share}<span>Share by Text or Email</span></button>
+      ${svc.items.length ? `<a class="btn btn-primary btn-block btn-lg" href="#/play/${svc.id}/0">${I.chart}<span>Open Charts in Order</span></a>` : ''}
+      <button class="btn btn-glass btn-block" id="share">${I.share}<span>Share by Text or Email</span></button>
       ${isAdmin() ? `
         <button class="btn btn-glass btn-block" id="post">${I.send}<span>Send in This App…</span></button>
         <button class="btn btn-glass btn-block" id="edit">${I.edit}<span>Edit This Service</span></button>
@@ -683,12 +710,35 @@ async function viewMessages() {
   const [msgs, team] = await load(rid, () => Promise.all([api.messages.list(), api.team.list()]));
   const names = Object.fromEntries(team.map(t => [t.id, t.id === state.profile.id ? 'You' : t.full_name]));
   const m = fill(rid, msgs.length ? `<div class="stack">${msgs.map(x => `<div class="glass card">${msgCard(x, names)}
-      ${isAdmin() ? `<button class="btn btn-danger-ghost btn-sm" data-del="${x.id}">${I.trash}<span>Delete</span></button>` : ''}</div>`).join('')}</div>`
+      <button class="btn btn-danger-ghost btn-sm" data-del="${x.id}">${I.trash}<span>Delete</span></button></div>`).join('')}</div>`
     : `<p class="empty">No messages yet.</p>`);
-  m?.addEventListener('click', async e => {
+  m?.addEventListener('click', e => {
     const b = e.target.closest('[data-del]'); if (!b) return;
-    if (!(await askYesNo('Delete this message for everyone?', 'Yes, Delete It', true))) return;
-    try { await api.messages.remove(b.dataset.del); toast('Message deleted.'); route(); } catch (err) { toast(err.message, 'bad'); }
+    deleteMessageSheet(msgs.find(x => x.id === b.dataset.del));
+  });
+}
+
+function deleteMessageSheet(msg) {
+  const leader = isAdmin();
+  sheet(leader ? 'Delete message' : 'Remove message', `
+    <p class="big-q">“${esc(msg.title)}”</p>
+    <div class="stack">
+      ${leader ? `<button class="btn btn-danger btn-block" data-x="all">${I.trash}<span>Delete for Everyone</span></button>
+        <p class="muted small choice-note">Removes it from everyone's phone. This can't be undone.</p>` : ''}
+      <button class="btn btn-glass btn-block" data-x="me">${I.user}<span>${leader ? 'Delete Just for Me' : 'Remove From My Messages'}</span></button>
+      <p class="muted small choice-note">Only removes it from your list. Everyone else still sees it.</p>
+      <button class="btn btn-ghost btn-block" data-close>Cancel</button>
+    </div>`, el => {
+    el.addEventListener('click', async e => {
+      const b = e.target.closest('[data-x]'); if (!b) return;
+      await busy(b, async () => {
+        try {
+          if (b.dataset.x === 'all') { await api.messages.remove(msg.id); toast('Deleted for everyone.'); }
+          else { await api.messages.hideForMe(msg.id); toast('Removed from your messages.'); }
+          closeSheet(); route();
+        } catch (err) { toast(err.message, 'bad'); }
+      });
+    });
   });
 }
 
@@ -923,6 +973,109 @@ function rolesSheet(person) {
   });
 }
 
+// ── CHORD CHARTS ───────────────────────────────────────────────────
+const CHART_SIZES = [0.85, 1, 1.15, 1.3, 1.5, 1.75];
+const chartPrefs = () => ({ size: Math.min(5, Math.max(0, parseInt(store.get('chartSize') ?? '1', 10) || 0)), chords: store.get('chartChords') !== '0' });
+
+function chartScreen(rid, { song, key, setKey, nav, onKey }) {
+  const base = song.chart_key || detectKey(song.chart) || song.default_key || '';
+  let cur = key || base;
+  const minor = /m$/.test(base || cur);
+  const m = fill(rid, `
+    <section class="glass card chart-head">
+      ${nav ? `<div class="eyebrow">Song ${nav.i + 1} of ${nav.n} · ${esc(fmtShort(nav.date))}</div>` : ''}
+      <h2 class="song-title">${esc(song.title)}</h2>
+      ${song.artist ? `<div class="muted">${esc(song.artist)}</div>` : ''}
+      ${nav?.note ? `<div class="set-note">${esc(nav.note)}</div>` : ''}
+      ${song.chart && base ? `
+        <div class="key-ctl" role="group" aria-label="Change key">
+          <button class="icon-btn key-step" id="kdown" aria-label="Lower the key">−</button>
+          <button class="key-now" id="kpick" aria-label="Choose a key"><span>Key</span><b id="kname"></b></button>
+          <button class="icon-btn key-step" id="kup" aria-label="Raise the key">+</button>
+        </div>
+        <div id="kreset" class="center"></div>
+        <div id="capo" class="capo"></div>` : ''}
+      ${song.chart ? `<div class="chart-tools">
+        <button class="btn btn-glass btn-sm" id="tsdown" aria-label="Smaller text">A−</button>
+        <button class="btn btn-glass btn-sm" id="tsup" aria-label="Bigger text">A+</button>
+        <button class="btn btn-glass btn-sm" id="chordtog" aria-pressed="true"></button>
+      </div>` : ''}
+    </section>
+    ${song.chart ? `<section class="glass card chart-card"><div id="chart" class="chart"></div></section>`
+      : `<section class="glass card"><p class="empty">There's no chord chart for this song yet.</p>
+        <div class="stack">
+          ${isAdmin() ? `<button class="btn btn-primary btn-block" id="addchart">${I.plus}<span>Add a Chord Chart</span></button>` : ''}
+          <a class="btn btn-glass btn-block" href="${esc(songSelectUrl(song))}" target="_blank" rel="noopener">${I.ext}<span>Open in SongSelect</span></a>
+        </div></section>`}
+    ${nav ? `<div class="play-nav">
+        ${nav.i > 0 ? `<a class="btn btn-glass" href="#/play/${nav.svcId}/${nav.i - 1}"><span>${I.back} Previous</span><small>${esc(nav.prevTitle)}</small></a>` : '<span></span>'}
+        ${nav.i < nav.n - 1 ? `<a class="btn btn-primary" href="#/play/${nav.svcId}/${nav.i + 1}"><span>Next ${I.next}</span><small>${esc(nav.nextTitle)}</small></a>`
+          : `<a class="btn btn-glass" href="#/services/${nav.svcId}"><span>Done</span><small>Back to set list</small></a>`}
+      </div>` : `<a class="btn btn-glass btn-block" href="#/songs/${song.id}">${I.music}<span>Song Details</span></a>`}`);
+  if (!m) return;
+  $('#addchart')?.addEventListener('click', () => songEditor({ ...song, _focusChart: true }));
+  if (!song.chart) return;
+
+  const draw = () => {
+    const prefs = chartPrefs();
+    const box = $('#chart');
+    box.style.setProperty('--chart-fs', CHART_SIZES[prefs.size] + 'rem');
+    box.innerHTML = renderChart(song.chart, base, cur, { chords: prefs.chords });
+    const tog = $('#chordtog');
+    tog.textContent = prefs.chords ? 'Hide Chords' : 'Show Chords';
+    tog.setAttribute('aria-pressed', prefs.chords);
+    if (!base) return;
+    $('#kname').textContent = cur;
+    const opts = capoOptions(cur).slice(0, 2);
+    $('#capo').innerHTML = opts.length ? `<b>Guitar:</b> ${esc(opts.map(o => o.capo === 0 ? 'no capo needed' : `Capo ${o.capo} → ${o.shape} shapes`).join(' · or '))}` : '';
+    const target = setKey || '';
+    $('#kreset').innerHTML = target && target !== cur
+      ? `<button class="btn btn-ghost btn-sm" id="kback">Back to the set list key (${esc(target)})</button>`
+      : (target ? `<span class="muted small">Set list key</span>` : '');
+    $('#kback')?.addEventListener('click', () => setKeyTo(target));
+  };
+  const setKeyTo = k => { cur = k; onKey?.(k); draw(); };
+  if (base) {
+    $('#kdown').onclick = () => setKeyTo(shiftKey(cur, -1));
+    $('#kup').onclick = () => setKeyTo(shiftKey(cur, 1));
+    $('#kpick').onclick = () => {
+      const list = minor ? MAJOR.map(k => k + 'm') : MAJOR;
+      sheet('Choose a key', `<div class="key-grid">${list.map(k => `<button type="button" class="key-btn ${k === cur ? 'on' : ''}" data-k="${k}">${k}</button>`).join('')}</div>`, el => {
+        el.querySelector('.key-grid').addEventListener('click', e => {
+          const b = e.target.closest('[data-k]'); if (!b) return;
+          closeSheet(); setKeyTo(b.dataset.k);
+        });
+      });
+    };
+  }
+  $('#tsdown').onclick = () => { const p = chartPrefs(); store.set('chartSize', Math.max(0, p.size - 1)); draw(); };
+  $('#tsup').onclick = () => { const p = chartPrefs(); store.set('chartSize', Math.min(CHART_SIZES.length - 1, p.size + 1)); draw(); };
+  $('#chordtog').onclick = () => { store.set('chartChords', chartPrefs().chords ? '0' : '1'); draw(); };
+  draw();
+}
+
+async function viewChart(id, key) {
+  const rid = frame({ tab: 'songs', title: 'Chord Chart', back: `#/songs/${id}` });
+  const song = await load(rid, () => api.songs.get(id));
+  chartScreen(rid, { song, key, onKey: k => history.replaceState(null, '', `#/chart/${id}/${encodeURIComponent(k)}`) });
+}
+
+const playKeys = new Map();   // keys someone changed while playing (just on this device)
+async function viewPlay(svcId, idx) {
+  const i = parseInt(idx, 10) || 0;
+  const rid = frame({ tab: 'services', title: 'Chord Charts', back: `#/services/${svcId}` });
+  const svc = await load(rid, () => api.services.get(svcId));
+  const it = svc.items[i];
+  if (!it) { fill(rid, `<p class="empty">That song isn't in this set list anymore.</p><a class="btn btn-primary btn-block" href="#/services/${svcId}">Back to Set List</a>`); return; }
+  const memo = `${svcId}:${i}`;
+  chartScreen(rid, {
+    song: it.song, key: playKeys.get(memo) || keyOf(it), setKey: keyOf(it),
+    onKey: k => playKeys.set(memo, k),
+    nav: { svcId, i, n: svc.items.length, date: svc.service_date, note: it.notes,
+      prevTitle: svc.items[i - 1]?.song?.title || '', nextTitle: svc.items[i + 1]?.song?.title || '' },
+  });
+}
+
 // ── live updates ───────────────────────────────────────────────────
 // Someone is mid-task: a pop-up is open, they're typing, or searching songs.
 const userIsBusy = () => !!$('.sheet-wrap') || /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || '') || !!$('#q')?.value;
@@ -980,12 +1133,14 @@ const routes = [
   [/^\/songs$/, viewSongs], [/^\/songs\/([\w-]+)$/, viewSong],
   [/^\/services$/, viewServices], [/^\/services\/([\w-]+)$/, viewService],
   [/^\/messages$/, viewMessages], [/^\/me$/, viewMe], [/^\/team$/, viewTeam],
+  [/^\/chart\/([\w-]+)(?:\/([^/]+))?$/, (id, k) => viewChart(id, k ? decodeURIComponent(k) : '')],
+  [/^\/play\/([\w-]+)\/(\d+)$/, viewPlay],
 ];
 function route() {
   if (!state.profile || state.profile.role === 'pending') return;
   closeSheet();
   const path = location.hash.replace(/^#/, '');
-  for (const [re, fn] of routes) { const m = path.match(re); if (m) return fn(m[1]).catch(console.error); }
+  for (const [re, fn] of routes) { const m = path.match(re); if (m) return fn(...m.slice(1)).catch(console.error); }
   return viewHome().catch(console.error);
 }
 function applyTextSize() { document.documentElement.dataset.size = store.get('textSize') || 'normal'; }

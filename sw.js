@@ -1,8 +1,8 @@
 // Offline support: keeps the app's look & screens on the device.
 // Team data (songs, set lists) always comes fresh from the server.
-const CACHE = 'cmc-worship-v7';
+const CACHE = 'cmc-worship-v9';
 const SHELL = ['./', './index.html', './css/styles.css', './js/app.js', './js/data.js', './js/config.js',
-  './js/demo-backend.js', './js/supabase-backend.js', './js/song-import.js', './manifest.webmanifest', './icons/logo-mark.png', './icons/icon-192.png'];
+  './js/demo-backend.js', './js/supabase-backend.js', './js/song-import.js', './js/chart.js', './manifest.webmanifest', './icons/logo-mark.png', './icons/icon-192.png'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));

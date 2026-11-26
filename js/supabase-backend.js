@@ -2,7 +2,9 @@
 // server by the Row Level Security rules in supabase/schema.sql.
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/+esm';
 
-const SONG_FIELDS = ['title', 'artist', 'ccli_number', 'default_key', 'tempo', 'time_signature', 'songselect_url', 'notes'];
+const SONG_FIELDS = ['title', 'artist', 'ccli_number', 'default_key', 'tempo', 'time_signature', 'songselect_url', 'notes', 'chart', 'chart_key'];
+// The song list skips the (long) chart text; a song's own page loads it.
+const SONG_LIST_COLS = 'id, title, artist, ccli_number, default_key, tempo, time_signature, songselect_url, notes, created_at, has_chart, chart_key';
 const pick = (o, keys) => Object.fromEntries(keys.filter(k => k in o).map(k => [k, o[k]]));
 
 function friendly(error) {
@@ -78,7 +80,7 @@ export function createSupabaseApi(cfg) {
     },
 
     songs: {
-      list: async () => must(await sb.from('songs').select('*').order('title')),
+      list: async () => must(await sb.from('songs').select(SONG_LIST_COLS).order('title')),
       get: async id => must(await sb.from('songs').select('*').eq('id', id).single()),
       save: async s => {
         const row = pick(s, SONG_FIELDS);
@@ -119,7 +121,15 @@ export function createSupabaseApi(cfg) {
     },
 
     messages: {
-      list: async () => must(await sb.from('messages').select('*').order('created_at', { ascending: false }).limit(100)),
+      list: async () => {
+        const [msgs, hidden] = await Promise.all([
+          sb.from('messages').select('*').order('created_at', { ascending: false }).limit(100),
+          sb.from('hidden_messages').select('message_id'),
+        ]);
+        const gone = new Set(must(hidden).map(r => r.message_id));   // ones I deleted just for me
+        return must(msgs).filter(m => !gone.has(m.id));
+      },
+      hideForMe: async id => { must(await sb.from('hidden_messages').insert({ message_id: id })); },
       post: async ({ title, body, service_id, author_name, recipient_ids }) =>
         must(await sb.from('messages').insert({ title, body, service_id: service_id || null, author_name,
           recipient_ids: recipient_ids && recipient_ids.length ? recipient_ids : null }).select().single()),

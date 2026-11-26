@@ -1,6 +1,6 @@
 // Demo backend — runs entirely on this device so you can try the app
 // before setting up Supabase. Any email/password works. Nothing is shared.
-const KEY = 'cmc-demo-v2';
+const KEY = 'cmc-demo-v3';
 const id = () => (crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2) + Date.now());
 const pad = n => String(n).padStart(2, '0');
 const ymd = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
@@ -9,8 +9,8 @@ const clone = o => JSON.parse(JSON.stringify(o));
 const wait = () => new Promise(r => setTimeout(r, 120));
 
 function seed() {
-  const s = (title, artist, ccli_number, default_key, tempo, time_signature = '4/4', notes = '') =>
-    ({ id: id(), title, artist, ccli_number, default_key, tempo, time_signature, songselect_url: '', notes, created_at: new Date().toISOString() });
+  const s = (title, artist, ccli_number, default_key, tempo, time_signature = '4/4', notes = '', chart = '', chart_key = '') =>
+    ({ id: id(), title, artist, ccli_number, default_key, tempo, time_signature, songselect_url: '', notes, chart, chart_key, created_at: new Date().toISOString() });
   const songs = [
     s('Goodness of God', 'Bethel Music', '7117726', 'Ab', 63, '6/8', 'Women lead verse 1.'),
     s('Build My Life', 'Housefires', '7070345', 'G', 68),
@@ -19,6 +19,47 @@ function seed() {
     s('Great Are You Lord', 'All Sons & Daughters', '6460220', 'G', 74),
     s('How Great Is Our God', 'Chris Tomlin', '4348399', 'C', 78),
     s('Amazing Grace (My Chains Are Gone)', 'Chris Tomlin', '4768151', 'G', 68, '3/4'),
+    s('Amazing Grace (Traditional)', 'John Newton (public domain)', '', 'G', 72, '3/4', 'Hymn — sample chord chart in ChordPro style.', `{title: Amazing Grace}
+{key: G}
+{c: Verse 1}
+[G]Amazing [G7]grace, how [C]sweet the [G]sound
+That [G]saved a wretch like [D]me
+I [G]once was [G7]lost, but [C]now am [G]found
+Was [Em]blind, but [D]now I [G]see
+
+{c: Verse 2}
+'Twas [G]grace that [G7]taught my [C]heart to [G]fear
+And [G]grace my fears re[D]lieved
+How [G]precious [G7]did that [C]grace ap[G]pear
+The [Em]hour I [D]first be[G]lieved
+
+{c: Verse 3}
+When [G]we've been [G7]there ten [C]thousand [G]years
+Bright [G]shining as the [D]sun
+We've [G]no less [G7]days to [C]sing God's [G]praise
+Than [Em]when we'd [D]first be[G]gun
+
+Public Domain`, 'G'),
+    s('Holy, Holy, Holy', 'Reginald Heber (public domain)', '', 'D', 76, '4/4', 'Hymn — sample chord chart in chords-above-lyrics style.', `Holy, Holy, Holy
+Key - D
+
+Verse 1
+D         Bm    G       D       A      D
+Holy, holy, holy! Lord God Almighty!
+D        G      D          Bm     E      A
+Early in the morning our song shall rise to Thee
+D         Bm    G       D       G      D
+Holy, holy, holy, merciful and mighty!
+G        D      Bm      A      D
+God in three Persons, blessed Trinity!
+
+Verse 2
+D         Bm    G         D       A      D
+Holy, holy, holy! All the saints adore Thee
+D        G         D        Bm      E       A
+Casting down their golden crowns around the glassy sea
+
+Public Domain`, 'D'),
   ];
   const me = { id: id(), full_name: '', email: '', role: 'admin', positions: [], created_at: new Date().toISOString() };
   const team = [
@@ -34,6 +75,7 @@ function seed() {
       { id: id(), song_id: songs[2].id, song_key: 'D', position: 0, notes: 'Start soft, keys only' },
       { id: id(), song_id: songs[0].id, song_key: 'G', position: 1, notes: '' },
       { id: id(), song_id: songs[4].id, song_key: 'G', position: 2, notes: 'Repeat bridge twice' },
+      { id: id(), song_id: songs[7].id, song_key: 'A', position: 3, notes: 'Closing hymn' },
     ] };
   const svc2 = { id: id(), service_date: sundayIn(1), title: 'Sunday Service', notes: '', created_at: new Date().toISOString(),
     items: [
@@ -80,7 +122,7 @@ export function createDemoApi() {
     async updateMyName(n) { me().full_name = n; save(); },
 
     songs: {
-      list: async () => { await wait(); return clone(db.songs).sort((a, b) => a.title.localeCompare(b.title)); },
+      list: async () => { await wait(); return clone(db.songs).map(x => ({ ...x, has_chart: !!x.chart })).sort((a, b) => a.title.localeCompare(b.title)); },
       get: async sid => { await wait(); const s = songById(sid); if (!s) throw new Error('Song not found.'); return clone(s); },
       save: async s => {
         await wait();
@@ -112,7 +154,8 @@ export function createDemoApi() {
       },
     },
     messages: {
-      list: async () => { await wait(); return clone(db.messages).sort((a, b) => b.created_at.localeCompare(a.created_at)); },
+      list: async () => { await wait(); const gone = new Set(db.hidden || []); return clone(db.messages).filter(m => !gone.has(m.id)).sort((a, b) => b.created_at.localeCompare(a.created_at)); },
+      hideForMe: async mid => { db.hidden = [...(db.hidden || []), mid]; save(); },
       post: async m => { const n = { ...m, recipient_ids: m.recipient_ids && m.recipient_ids.length ? m.recipient_ids : null, author_id: db.meId, id: id(), created_at: new Date().toISOString() }; db.messages.push(n); save(); return clone(n); },
       remove: async mid => { db.messages = db.messages.filter(m => m.id !== mid); save(); },
     },
