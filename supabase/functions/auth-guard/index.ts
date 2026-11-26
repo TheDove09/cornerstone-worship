@@ -1,13 +1,19 @@
-// Cornerstone Worship sign-in guard (Supabase Edge Function).
-// Sets up and checks Face ID / Touch ID (passkeys).
+// Cornerstone Worship server program (Supabase Edge Function).
+// Sets up and checks Face ID / Touch ID (passkeys) and sends phone notifications.
 // Only this program can mark a sign-in as confirmed (it uses the service key, which never leaves Supabase).
 import { createClient } from 'npm:@supabase/supabase-js@2.45.4';
+import { messagePayload, sendPush, type PhoneSub } from './push.ts';
 import { CHALLENGE_TTL_MS, authenticationOptions, checkAuthentication, checkRegistration, registrationOptions, siteFor } from './passkeys.ts';
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!;
 const SERVICE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
 const ALLOWED_ORIGINS = (Deno.env.get('APP_ORIGINS') || 'https://thedove09.github.io').split(',').map(s => s.trim()).filter(Boolean);
 
+const VAPID = {
+  subject: Deno.env.get('VAPID_SUBJECT') || 'https://thedove09.github.io/cornerstone-worship/',
+  publicKey: Deno.env.get('VAPID_PUBLIC_KEY') || '',
+  privateKey: Deno.env.get('VAPID_PRIVATE_KEY') || '',
+};
 const db = createClient(SUPABASE_URL, SERVICE_KEY, { auth: { persistSession: false, autoRefreshToken: false } });
 
 class Oops extends Error { constructor(public status: number, message: string) { super(message); } }
@@ -37,6 +43,24 @@ async function confirmSession(userId: string, sessionId: string, method: 'passke
   must(await db.from('verified_sessions').upsert({ session_id: sessionId, user_id: userId, method }, { onConflict: 'session_id' }));
 }
 
+// A team member whose sign-in is fully confirmed (same rule the database uses).
+async function activeMember(userId: string, sessionId: string, role: string | undefined) {
+  if (role !== 'member' && role !== 'admin') return false;
+  const keys = must(await db.from('passkeys').select('id').eq('user_id', userId).limit(1)) as any[];
+  return !keys?.length || await sessionConfirmed(userId, sessionId);
+}
+
+async function pushTo(userIds: string[], payload: unknown) {
+  if (!userIds.length || !VAPID.privateKey) return { sent: 0, phones: 0 };
+  const subs = (must(await db.from('push_subscriptions').select('endpoint, p256dh, auth').in('user_id', userIds)) as PhoneSub[]) || [];
+  const results = await Promise.all(subs.map(s => sendPush(s, payload, VAPID).then(r => ({ s, r }))));
+  const gone = results.filter(x => x.r === 'gone').map(x => x.s.endpoint);
+  if (gone.length) must(await db.from('push_subscriptions').delete().in('endpoint', gone));
+  const ok = results.filter(x => x.r === 'sent').map(x => x.s.endpoint);
+  if (ok.length) must(await db.from('push_subscriptions').update({ last_sent_at: new Date().toISOString() }).in('endpoint', ok));
+  return { sent: ok.length, phones: subs.length };
+}
+
 Deno.serve(async req => {
   const origin = req.headers.get('origin') || '';
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors(origin) });
@@ -48,9 +72,41 @@ Deno.serve(async req => {
     const sessionId: string = jwtClaims(jwt).session_id;
     if (!sessionId) throw new Oops(401, 'Please sign in again.');
     const body = await req.json().catch(() => ({}));
-    const profile = must(await db.from('profiles').select('full_name').eq('id', user.id).maybeSingle()) as { full_name?: string } | null;
+    const profile = must(await db.from('profiles').select('full_name, role').eq('id', user.id).maybeSingle()) as { full_name?: string; role?: string } | null;
 
     switch (body.action) {
+      // ── phone notifications ──────────────────────────────────────
+      case 'push-save': {
+        if (!(await activeMember(user.id, sessionId, profile?.role))) throw new Oops(403, 'Please finish signing in first.');
+        const sub = body.subscription || {};
+        const endpoint = String(sub.endpoint || ''), p256dh = String(sub.keys?.p256dh || ''), auth = String(sub.keys?.auth || '');
+        if (!/^https:\/\//.test(endpoint) || !p256dh || !auth) throw new Oops(400, 'That phone could not be set up for notifications.');
+        // One row per phone; if someone else signed in on this phone before, it now belongs to this person.
+        must(await db.from('push_subscriptions').upsert({ endpoint, p256dh, auth, user_id: user.id, device: String(body.device || '').slice(0, 60) }, { onConflict: 'endpoint' }));
+        return reply(origin, 200, { ok: true });
+      }
+      case 'push-remove': {
+        must(await db.from('push_subscriptions').delete().eq('endpoint', String(body.endpoint || '')).eq('user_id', user.id));
+        return reply(origin, 200, { ok: true });
+      }
+      case 'push-test': {
+        if (!(await activeMember(user.id, sessionId, profile?.role))) throw new Oops(403, 'Please finish signing in first.');
+        if (!VAPID.privateKey) throw new Oops(503, "Notifications aren't set up on the server yet.");
+        const r = await pushTo([user.id], { title: 'Notifications are working! 🎵', body: "This is how you'll hear about messages from the worship leaders.", url: './#/me', tag: 'test' });
+        if (!r.phones) throw new Oops(400, "This phone isn't set up for notifications yet. Tap Turn On Notifications.");
+        return reply(origin, 200, r);
+      }
+      case 'notify-message': {
+        if (!(await activeMember(user.id, sessionId, profile?.role))) throw new Oops(403, 'Please finish signing in first.');
+        const m = must(await db.from('messages').select('id, title, body, author_id, author_name, service_id, recipient_ids, created_at').eq('id', String(body.message_id || '')).maybeSingle()) as any;
+        if (!m || m.author_id !== user.id) throw new Oops(404, 'Message not found.');
+        if (Date.now() - new Date(m.created_at).getTime() > 15 * 60 * 1000) throw new Oops(400, 'That message is too old to notify about.');
+        const team = (must(await db.from('profiles').select('id').in('role', ['member', 'admin'])) as { id: string }[]).map(p => p.id);
+        const wanted: string[] = m.recipient_ids ? team.filter(id => m.recipient_ids.includes(id)) : team;
+        const r = await pushTo(wanted.filter(id => id !== user.id), messagePayload(m));
+        return reply(origin, 200, r);
+      }
+
       // ── Face ID / Touch ID ───────────────────────────────────────
       case 'passkey-register-options':
       case 'passkey-register-verify':

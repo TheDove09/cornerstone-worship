@@ -70,7 +70,15 @@ export function createSupabaseApi(cfg) {
       const data = must(await sb.auth.signUp({ email, password, options: { data: { full_name }, emailRedirectTo: appUrl() } }));
       return { needsEmailConfirm: !data.session };
     },
-    async signOut() { await sb.auth.signOut(); },
+    async signOut() {
+      // Stop notifications for this account on this phone (the phone keeps its permission).
+      try {
+        const reg = 'serviceWorker' in navigator ? await navigator.serviceWorker.getRegistration() : null;
+        const sub = await reg?.pushManager?.getSubscription();
+        if (sub) await guard('push-remove', { endpoint: sub.endpoint });
+      } catch {}
+      await sb.auth.signOut();
+    },
     async resetPassword(email) { must(await sb.auth.resetPasswordForEmail(email, { redirectTo: appUrl() })); },
     async updatePassword(password) { must(await sb.auth.updateUser({ password })); },
 
@@ -95,6 +103,43 @@ export function createSupabaseApi(cfg) {
       let response; try { response = await startAuthentication({ optionsJSON }); } catch (e) { throw passkeyError(e); }
       return guard('passkey-login-verify', { response });
     },
+    // ── phone notifications ──
+    pushSupported: () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window,
+    async pushStatus() {
+      if (!('Notification' in window) || !('serviceWorker' in navigator)) return 'unsupported';
+      if (Notification.permission === 'denied') return 'blocked';
+      const reg = await navigator.serviceWorker.ready;
+      const sub = await reg.pushManager?.getSubscription();
+      return Notification.permission === 'granted' && sub ? 'on' : 'off';
+    },
+    // Must be called from a button tap (iPhones require it).
+    async enablePush(device) {
+      const perm = await Notification.requestPermission();
+      if (perm !== 'granted') throw new Error(perm === 'denied'
+        ? 'Notifications are blocked for this app. Turn them on in your phone\'s Settings → Notifications.'
+        : 'Notifications were not turned on.');
+      const reg = await navigator.serviceWorker.ready;
+      const key = Uint8Array.from(atob(cfg.PUSH_PUBLIC_KEY.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
+      const sub = (await reg.pushManager.getSubscription()) || await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key });
+      await guard('push-save', { subscription: sub.toJSON(), device });
+    },
+    // Quietly re-link this phone to whoever is signed in (if notifications are already allowed).
+    async refreshPush(device) {
+      try {
+        if (!('Notification' in window) || Notification.permission !== 'granted') return;
+        const reg = await navigator.serviceWorker.ready;
+        const sub = await reg.pushManager?.getSubscription();
+        if (sub) await guard('push-save', { subscription: sub.toJSON(), device });
+      } catch {}
+    },
+    async disablePush() {
+      const reg = await navigator.serviceWorker.ready;
+      const sub = await reg.pushManager?.getSubscription();
+      if (sub) { await guard('push-remove', { endpoint: sub.endpoint }).catch(() => {}); await sub.unsubscribe().catch(() => {}); }
+    },
+    testPush: () => guard('push-test'),
+    notifyMessage: id => guard('notify-message', { message_id: id }),
+
     listPasskeys: async () => must(await sb.from('passkeys').select('id, device_name, created_at, last_used_at').order('created_at')),
     removePasskey: async id => { must(await sb.from('passkeys').delete().eq('id', id)); },
 

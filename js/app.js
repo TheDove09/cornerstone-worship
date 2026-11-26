@@ -359,9 +359,9 @@ async function viewConfirm() {
 
 // After signing in with just a password, offer Face ID / Touch ID once on each device.
 async function offerPasskeyIfUseful() {
-  if (!state.profile || (state.security?.passkeys || 0) > 0) return;
+  if (!state.profile || (state.security?.passkeys || 0) > 0) return false;
   const memo = 'pkOffer:' + state.profile.id;
-  if (store.get(memo) || !(await api.passkeyReady())) return;
+  if (store.get(memo) || !(await api.passkeyReady())) return false;
   store.set(memo, 'asked');
   sheet('Keep your account safe', `
     <p class="big-q">Set up Face ID or Touch ID? Then nobody can get into your account with just your password.</p>
@@ -379,6 +379,58 @@ async function offerPasskeyIfUseful() {
         if ($('#security')) drawSecurity(state.renderId);
       } catch (err) { $('#pkofferr', el).innerHTML = errBox(err.message); }
     });
+  });
+  return true;
+}
+
+// ── PHONE NOTIFICATIONS ────────────────────────────────────────────
+const canAskForPush = () => api.pushSupported() && (!isIOS() || isStandalone());   // iPhones: only once added to the Home Screen
+
+async function offerNotifications() {
+  if (!state.profile || !canAskForPush()) return;
+  const status = await api.pushStatus().catch(() => 'unsupported');
+  if (status !== 'off' || ('Notification' in window && Notification.permission === 'granted')) return;
+  const memo = 'pushOffer:' + state.profile.id;
+  if (store.get(memo)) return;
+  store.set(memo, 'asked');
+  sheet('Get notifications?', `
+    <p class="big-q">Get a notification on this ${esc(deviceName() === 'This device' ? 'device' : deviceName())} when the worship leaders send a message — even when the app is closed.</p>
+    <div class="stack">
+      <button class="btn btn-primary btn-block btn-lg" id="pushyes">${I.msg}<span>Turn On Notifications</span></button>
+      <div id="pusherr"></div>
+      <button class="btn btn-ghost btn-block" data-close>Not Now</button>
+      <p class="muted small center">You can change this any time under <b>Me</b>.</p>
+    </div>`, el => {
+    $('#pushyes', el).onclick = e => busy(e.currentTarget, async () => {
+      try { await api.enablePush(deviceName()); closeSheet(); toast("Notifications are on! You'll hear about new messages."); if ($('#notify')) drawNotify(state.renderId); }
+      catch (err) { $('#pusherr', el).innerHTML = errBox(err.message); }
+    });
+  });
+}
+
+async function drawNotify(rid) {
+  const box = $('#notify'); if (!box) return;
+  const status = await api.pushStatus().catch(() => 'unsupported');
+  if (rid !== state.renderId || !$('#notify')) return;
+  const iphoneNeedsHome = isIOS() && !isStandalone();
+  box.innerHTML = `<div class="eyebrow">Notifications</div>
+    ${status === 'on' ? `<p class="ok-line">${I.check} On. You'll get a notification when leaders send a message.</p>
+        <div class="stack"><button class="btn btn-glass btn-block" id="pushtest">${I.send}<span>Send Me a Test Notification</span></button>
+        <button class="btn btn-danger-ghost btn-block" id="pushoff">Turn Off Notifications</button></div>`
+    : status === 'blocked' ? `<p class="muted">Notifications are <b>blocked</b> for this app. To turn them on, open your phone's <b>Settings → Notifications</b>, find <b>Worship</b> (or your browser), and allow them.</p>`
+    : iphoneNeedsHome ? `<p class="muted">On iPhone, notifications only work after you <b>add this app to your Home Screen</b> (see below). Then open it from the Home Screen and turn them on here.</p>`
+    : status === 'unsupported' ? `<p class="muted">This device or browser can't show notifications.</p>`
+    : `<p class="muted">Off. Turn on notifications to hear about new messages, even when the app is closed.</p>
+       <button class="btn btn-primary btn-block" id="pushon">${I.msg}<span>Turn On Notifications</span></button>`}`;
+  $('#pushon', box)?.addEventListener('click', e => busy(e.currentTarget, async () => {
+    try { await api.enablePush(deviceName()); toast('Notifications are on!'); drawNotify(rid); } catch (err) { toast(err.message, 'bad'); }
+  }));
+  $('#pushtest', box)?.addEventListener('click', e => busy(e.currentTarget, async () => {
+    try { await api.testPush(); toast('Sent! It should pop up in a few seconds.'); } catch (err) { toast(err.message, 'bad'); }
+  }));
+  $('#pushoff', box)?.addEventListener('click', async () => {
+    if (!(await askYesNo('Turn off notifications on this device?', 'Yes, Turn Off', true))) return;
+    try { await api.disablePush(); toast('Notifications are off.'); drawNotify(rid); } catch (err) { toast(err.message, 'bad'); }
   });
 }
 
@@ -867,8 +919,9 @@ async function messageEditor(pre = {}) {
       if (mode === 'pick' && !picked.size) return ($('#merr', el).innerHTML = errBox('Please pick at least one person, or choose Everyone.'));
       await busy($('#msend', el), async () => {
         try {
-          await api.messages.post({ title: f.title.value.trim(), body: f.body.value.trim(), service_id: pre.service_id || null,
+          const posted = await api.messages.post({ title: f.title.value.trim(), body: f.body.value.trim(), service_id: pre.service_id || null,
             author_name: state.profile.full_name, recipient_ids: mode === 'pick' ? [...picked] : null });
+          if (posted?.id) api.notifyMessage(posted.id).catch(() => {});   // phone notifications (in the background)
           closeSheet();
           toast(mode === 'pick' ? `Sent to ${picked.size} ${picked.size === 1 ? 'person' : 'people'}!` : 'Sent to the team!');
           if (location.hash === '#/messages') route(); else location.hash = '#/messages';
@@ -913,6 +966,8 @@ async function viewMe() {
           : `<ol class="howto"><li><b>Android:</b> tap the <b>⋮</b> menu in Chrome, then <b>Install app</b> or <b>Add to Home screen</b>.</li><li><b>Computer:</b> click the install icon at the right end of the address bar in Chrome or Edge.</li></ol>`}`}
     </section>
 
+    <section class="glass card" id="notify"><div class="eyebrow">Notifications</div><div class="loading small-load"><span class="spinner"></span></div></section>
+
     <section class="glass card" id="security"><div class="eyebrow">Face ID / Touch ID</div><div class="loading small-load"><span class="spinner"></span></div></section>
 
     ${isAdmin() ? `<section class="glass card">
@@ -928,6 +983,7 @@ async function viewMe() {
   if (!m) return;
   $$('[data-size]', m).forEach(b => b.onclick = () => { store.set('textSize', b.dataset.size); applyTextSize(); viewMe(); });
   drawSecurity(rid);
+  drawNotify(rid);
   $('#install')?.addEventListener('click', async () => { await installPrompt.prompt(); installPrompt = null; viewMe(); });
   $('#out').onclick = async () => { if (await askYesNo('Sign out of the app?', 'Yes, Sign Out')) { await api.signOut(); state.profile = null; viewLogin(); } };
   $('#rename').onclick = () => sheet('Change my name', `<form id="nf" class="stack"><label class="field"><span>Your name</span><input class="input" name="n" value="${esc(p.full_name)}" required></label>
@@ -1265,7 +1321,8 @@ async function start() {
   if (state.profile.role === 'pending') { stopLiveUpdates(); return viewUnlock(); }
   startLive();
   route();
-  offerPasskeyIfUseful();
+  api.refreshPush(deviceName());
+  offerPasskeyIfUseful().then(shown => { if (!shown) offerNotifications(); });
 }
 
 applyTextSize();

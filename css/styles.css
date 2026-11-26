@@ -407,3 +407,5 @@ details.more summary { cursor: pointer; color: var(--teal); font-weight: 700; mi
 .pk-status { display: inline-flex; align-items: center; gap: 6px; margin-top: 8px; font-size: .78rem; font-weight: 700; color: var(--muted); }
 .pk-status .ic { width: 15px; height: 15px; }
 .pk-status.on { color: #c4ef8b; }
+
+#notify .ok-line { margin-bottom: 12px; }
