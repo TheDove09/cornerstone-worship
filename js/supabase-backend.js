@@ -110,14 +110,16 @@ export function createSupabaseApi(cfg) {
 
     messages: {
       list: async () => must(await sb.from('messages').select('*').order('created_at', { ascending: false }).limit(100)),
-      post: async ({ title, body, service_id, author_name }) =>
-        must(await sb.from('messages').insert({ title, body, service_id: service_id || null, author_name }).select().single()),
+      post: async ({ title, body, service_id, author_name, recipient_ids }) =>
+        must(await sb.from('messages').insert({ title, body, service_id: service_id || null, author_name,
+          recipient_ids: recipient_ids && recipient_ids.length ? recipient_ids : null }).select().single()),
       remove: async id => { must(await sb.from('messages').delete().eq('id', id)); },
     },
 
     team: {
       list: async () => must(await sb.from('profiles').select('*').order('full_name')),
       setRole: async (id, role) => { must(await sb.from('profiles').update({ role }).eq('id', id)); },
+      setPositions: async (id, positions) => { must(await sb.from('profiles').update({ positions }).eq('id', id)); },
     },
   };
 }

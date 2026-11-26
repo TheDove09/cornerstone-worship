@@ -27,6 +27,12 @@ function timeAgo(iso) {
 
 const MAJOR = ['C', 'C#', 'Db', 'D', 'Eb', 'E', 'F', 'F#', 'Gb', 'G', 'Ab', 'A', 'Bb', 'B'];
 const KEYS = [...MAJOR, ...MAJOR.map(k => k + 'm')];
+const ROLES = ['Worship Leader', 'Vocals', 'Piano / Keys', 'Acoustic Guitar', 'Electric Guitar', 'Bass', 'Drums', 'Pastor', 'Sound / Tech', 'Slides / Media'];
+const sortRoles = list => [...list].sort((a, b) => {
+  const ia = ROLES.indexOf(a), ib = ROLES.indexOf(b);
+  return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib) || a.localeCompare(b);
+});
+const roleChips = list => (list && list.length) ? `<div class="role-chips">${sortRoles(list).map(r => `<span class="role-chip">${esc(r)}</span>`).join('')}</div>` : '';
 const keyOptions = sel => `<option value="">— Choose a key —</option>` +
   `<optgroup label="Major">${MAJOR.map(k => `<option ${k === sel ? 'selected' : ''}>${k}</option>`).join('')}</optgroup>` +
   `<optgroup label="Minor">${MAJOR.map(k => k + 'm').map(k => `<option ${k === sel ? 'selected' : ''}>${k}</option>`).join('')}</optgroup>`;
@@ -350,10 +356,13 @@ async function viewHome() {
   $('[data-a=song]', m)?.addEventListener('click', () => songEditor());
 }
 
-const msgCard = m => `<article class="msg">
+const msgCard = (m, names) => `<article class="msg">
   <div class="msg-title">${esc(m.title)}</div>
   ${m.body ? `<div class="msg-body">${nl2br(m.body)}</div>` : ''}
   <div class="msg-meta">${esc(m.author_name || 'Leader')} · ${esc(timeAgo(m.created_at))}</div>
+  ${m.recipient_ids ? `<div class="msg-to">${I.lock}<span>${names
+    ? 'To: ' + esc(m.recipient_ids.map(id => names[id] || 'someone').join(', '))
+    : 'Private message'}</span></div>` : ''}
   ${m.service_id ? `<a class="btn btn-glass btn-sm" href="#/services/${m.service_id}">${I.cal}<span>Open Set List</span></a>` : ''}
 </article>`;
 
@@ -467,18 +476,15 @@ function shareKeySheet(s) {
     <label class="field"><span>When? (optional)</span><input class="input" id="when" placeholder="e.g. this Sunday"></label>
     <div class="stack">
       <button class="btn btn-primary btn-block" id="go">${I.share}<span>Share by Text or Email</span></button>
-      ${isAdmin() ? `<button class="btn btn-glass btn-block" id="post">${I.send}<span>Send to Team in This App</span></button>` : ''}
+      ${isAdmin() ? `<button class="btn btn-glass btn-block" id="post">${I.send}<span>Send in This App…</span></button>` : ''}
     </div>`, el => {
     let key = s.default_key || '';
     $$('.key-btn', el).forEach(b => b.onclick = () => { $$('.key-btn', el).forEach(x => x.classList.remove('on')); b.classList.add('on'); key = b.dataset.k; });
     const text = () => `🎵 ${s.title}${s.artist ? ` (${s.artist})` : ''} — we'll be in the key of ${key || '?'}${$('#when', el).value.trim() ? ' ' + $('#when', el).value.trim() : ''}.`;
     $('#go', el).onclick = () => { if (!key) return toast('Please pick a key first.', 'bad'); shareText(s.title, text()); };
-    $('#post', el)?.addEventListener('click', async e => {
+    $('#post', el)?.addEventListener('click', () => {
       if (!key) return toast('Please pick a key first.', 'bad');
-      await busy(e.currentTarget, async () => {
-        try { await api.messages.post({ title: `${s.title} — Key of ${key}`, body: text(), author_name: state.profile.full_name }); closeSheet(); toast('Sent to the team!'); }
-        catch (err) { toast(err.message, 'bad'); }
-      });
+      messageEditor({ title: `${s.title} — Key of ${key}`, body: text() });
     });
   });
 }
@@ -567,20 +573,14 @@ async function viewService(id) {
     <div class="stack">
       <button class="btn btn-primary btn-block btn-lg" id="share">${I.share}<span>Share by Text or Email</span></button>
       ${isAdmin() ? `
-        <button class="btn btn-glass btn-block" id="post">${I.send}<span>Send to Team in This App</span></button>
+        <button class="btn btn-glass btn-block" id="post">${I.send}<span>Send in This App…</span></button>
         <button class="btn btn-glass btn-block" id="edit">${I.edit}<span>Edit This Service</span></button>
         <button class="btn btn-danger-ghost btn-block" id="del">${I.trash}<span>Delete This Service</span></button>` : ''}
     </div>`);
   if (!m) return;
   $('#share').onclick = () => shareText(`${svc.title} — ${fmtDate(svc.service_date)}`, setlistText(svc));
-  $('#post')?.addEventListener('click', async e => {
-    await busy(e.currentTarget, async () => {
-      try {
-        await api.messages.post({ title: `Set list for ${fmtDate(svc.service_date)}`, body: setlistText(svc), service_id: svc.id, author_name: state.profile.full_name });
-        toast('Sent to the team!');
-      } catch (err) { toast(err.message, 'bad'); }
-    });
-  });
+  $('#post')?.addEventListener('click', () =>
+    messageEditor({ title: `Set list for ${fmtDate(svc.service_date)}`, body: setlistText(svc), service_id: svc.id }));
   $('#edit')?.addEventListener('click', () => serviceEditor(svc));
   $('#del')?.addEventListener('click', async () => {
     if (!(await askYesNo(`Delete the ${fmtDate(svc.service_date)} service?`, 'Yes, Delete It', true))) return;
@@ -674,8 +674,9 @@ async function serviceEditor(svc = null) {
 async function viewMessages() {
   const rid = frame({ tab: 'messages', title: 'Messages', actions: isAdmin() ? `<button class="btn btn-primary btn-sm" id="add">${I.plus}<span>New</span></button>` : '' });
   $('#add')?.addEventListener('click', () => messageEditor());
-  const msgs = await load(rid, () => api.messages.list());
-  const m = fill(rid, msgs.length ? `<div class="stack">${msgs.map(x => `<div class="glass card">${msgCard(x)}
+  const [msgs, team] = await load(rid, () => Promise.all([api.messages.list(), api.team.list()]));
+  const names = Object.fromEntries(team.map(t => [t.id, t.id === state.profile.id ? 'You' : t.full_name]));
+  const m = fill(rid, msgs.length ? `<div class="stack">${msgs.map(x => `<div class="glass card">${msgCard(x, names)}
       ${isAdmin() ? `<button class="btn btn-danger-ghost btn-sm" data-del="${x.id}">${I.trash}<span>Delete</span></button>` : ''}</div>`).join('')}</div>`
     : `<p class="empty">No messages yet.</p>`);
   m?.addEventListener('click', async e => {
@@ -685,22 +686,79 @@ async function viewMessages() {
   });
 }
 
-function messageEditor() {
-  sheet('Message the team', `
+async function messageEditor(pre = {}) {
+  let team = [];
+  try { team = (await api.team.list()).filter(t => t.role !== 'pending' && t.id !== state.profile.id); }
+  catch (e) { return toast(e.message, 'bad'); }
+  const rolesInUse = sortRoles([...new Set(team.flatMap(t => t.positions || []))]);
+  const idsFor = r => team.filter(t => (t.positions || []).includes(r)).map(t => t.id);
+  const picked = new Set();
+  let mode = 'all';
+  sheet('Send a message', `
     <form id="mf" class="stack" novalidate>
-      <label class="field"><span>Subject</span><input class="input" name="title" required placeholder="e.g. Rehearsal moved to Thursday"></label>
-      <label class="field"><span>Message</span><textarea class="input" name="body" rows="6"></textarea></label>
+      <div class="field"><span>Who should get it?</span>
+        <div class="seg two" role="radiogroup" aria-label="Who should get it">
+          <button type="button" class="seg-btn on" data-mode="all" role="radio" aria-checked="true">Everyone</button>
+          <button type="button" class="seg-btn" data-mode="pick" role="radio" aria-checked="false">Choose People</button>
+        </div>
+      </div>
+      <div id="pick" class="pick-box" hidden>
+        ${rolesInUse.length ? `<p class="muted small">Tap a role to pick everyone who has it:</p>
+          <div class="chip-row">${rolesInUse.map(r => `<button type="button" class="chip" data-role="${esc(r)}" aria-pressed="false">${esc(r)}</button>`).join('')}</div>
+          <p class="muted small">…or tap people one at a time:</p>`
+        : `<p class="muted small">Tip: give people roles (Bass, Vocals…) on the Team Members page so you can pick them by role.</p>`}
+        <div class="people-pick">${team.length ? team.map(t => `<label class="pick-row">
+            <input type="checkbox" value="${t.id}">
+            <span class="row-main"><span class="row-title">${esc(t.full_name || t.email)}</span>
+            ${(t.positions || []).length ? `<span class="row-sub">${esc(sortRoles(t.positions).join(' · '))}</span>` : ''}</span></label>`).join('')
+          : `<p class="empty">No one else is on the team yet.</p>`}</div>
+      </div>
+      <div id="pickcount" class="pick-count" aria-live="polite"></div>
+      <label class="field"><span>Subject</span><input class="input" name="title" required value="${esc(pre.title || '')}" placeholder="e.g. Rehearsal moved to Thursday"></label>
+      <label class="field"><span>Message</span><textarea class="input" name="body" rows="6">${esc(pre.body || '')}</textarea></label>
       <div id="merr"></div>
-      <button class="btn btn-primary btn-block btn-lg">${I.send}<span>Send to Team</span></button>
+      <button class="btn btn-primary btn-block btn-lg" id="msend">${I.send}<span>Send to Everyone</span></button>
     </form>`, el => {
     const f = $('#mf', el);
+    const sync = () => {
+      $$('.pick-row input', el).forEach(i => { i.checked = picked.has(i.value); i.closest('.pick-row').classList.toggle('on', i.checked); });
+      $$('.chip[data-role]', el).forEach(c => {
+        const ids = idsFor(c.dataset.role), on = ids.length > 0 && ids.every(id => picked.has(id));
+        c.classList.toggle('on', on); c.setAttribute('aria-pressed', on);
+      });
+      const n = picked.size;
+      $('#pickcount', el).textContent = mode !== 'pick' ? '' : n
+        ? `Sending to ${n} ${n === 1 ? 'person' : 'people'}: ${team.filter(t => picked.has(t.id)).map(t => t.full_name).join(', ')}`
+        : 'Nobody picked yet.';
+      $('#msend span', el).textContent = mode === 'all' ? 'Send to Everyone' : `Send to ${n} ${n === 1 ? 'Person' : 'People'}`;
+    };
+    $$('[data-mode]', el).forEach(b => b.onclick = () => {
+      mode = b.dataset.mode;
+      $$('[data-mode]', el).forEach(x => { x.classList.toggle('on', x === b); x.setAttribute('aria-checked', x === b); });
+      $('#pick', el).hidden = mode !== 'pick';
+      sync();
+    });
+    el.addEventListener('change', e => {
+      if (!e.target.matches('.pick-row input')) return;
+      e.target.checked ? picked.add(e.target.value) : picked.delete(e.target.value);
+      sync();
+    });
+    $$('.chip[data-role]', el).forEach(c => c.onclick = () => {
+      const ids = idsFor(c.dataset.role), all = ids.every(id => picked.has(id));
+      ids.forEach(id => all ? picked.delete(id) : picked.add(id));
+      sync();
+    });
+    sync();
     f.onsubmit = async e => {
       e.preventDefault();
       if (!f.title.value.trim()) return ($('#merr', el).innerHTML = errBox('Please type a subject.'));
-      await busy(f.querySelector('.btn-primary'), async () => {
+      if (mode === 'pick' && !picked.size) return ($('#merr', el).innerHTML = errBox('Please pick at least one person, or choose Everyone.'));
+      await busy($('#msend', el), async () => {
         try {
-          await api.messages.post({ title: f.title.value.trim(), body: f.body.value.trim(), author_name: state.profile.full_name });
-          closeSheet(); toast('Sent to the team!');
+          await api.messages.post({ title: f.title.value.trim(), body: f.body.value.trim(), service_id: pre.service_id || null,
+            author_name: state.profile.full_name, recipient_ids: mode === 'pick' ? [...picked] : null });
+          closeSheet();
+          toast(mode === 'pick' ? `Sent to ${picked.size} ${picked.size === 1 ? 'person' : 'people'}!` : 'Sent to the team!');
           if (location.hash === '#/messages') route(); else location.hash = '#/messages';
         } catch (err) { $('#merr', el).innerHTML = errBox(err.message); }
       });
@@ -724,7 +782,7 @@ async function viewMe() {
     <section class="glass card">
       <div class="me-head"><div class="avatar">${esc(firstName(p.full_name)[0]?.toUpperCase() || '?')}</div>
         <div><div class="row-title">${esc(p.full_name || 'No name')}</div><div class="row-sub">${esc(p.email)}</div>
-        <span class="role-tag ${p.role}">${p.role === 'admin' ? 'Worship Leader' : 'Team Member'}</span></div></div>
+        <span class="role-tag ${p.role}">${p.role === 'admin' ? 'Leader' : 'Team Member'}</span>${roleChips(p.positions)}</div></div>
       <button class="btn btn-glass btn-block" id="rename">${I.edit}<span>Change My Name</span></button>
     </section>
 
@@ -791,19 +849,24 @@ async function viewTeam() {
   const group = (label, list, empty) => `<h2 class="section-h">${label} <span class="count">${list.length}</span></h2>
     <div class="stack">${list.length ? list.map(t => `<div class="glass card person">
       <div class="me-head"><div class="avatar sm">${esc((t.full_name || '?')[0].toUpperCase())}</div>
-        <div class="row-main"><div class="row-title">${esc(t.full_name || '(no name)')}</div><div class="row-sub">${esc(t.email)}</div></div></div>
-      ${t.id === state.profile.id ? `<p class="muted small">This is you.</p>` : `<div class="grid2">
-        ${t.role === 'pending' ? `<button class="btn btn-primary" data-role="member" data-id="${t.id}">Let Them In</button>`
-          : t.role === 'member' ? `<button class="btn btn-glass" data-role="admin" data-id="${t.id}">Make Leader</button>`
-          : `<button class="btn btn-glass" data-role="member" data-id="${t.id}">Remove as Leader</button>`}
-        ${t.role !== 'pending' ? `<button class="btn btn-danger-ghost" data-role="pending" data-id="${t.id}">Remove Access</button>` : ''}
-      </div>`}</div>`).join('') : `<p class="empty">${empty}</p>`}</div>`;
+        <div class="row-main"><div class="row-title">${esc(t.full_name || '(no name)')}${t.id === state.profile.id ? ' <span class="muted small">(you)</span>' : ''}</div>
+        <div class="row-sub">${esc(t.email)}</div>
+        ${roleChips(t.positions) || '<div class="muted small">No roles yet</div>'}</div></div>
+      <div class="stack">
+        <button class="btn btn-glass btn-block" data-roles="${t.id}">${I.music}<span>Set Roles</span></button>
+        ${t.id === state.profile.id ? '' : t.role === 'pending' ? `<button class="btn btn-primary btn-block" data-role="member" data-id="${t.id}">Let Them In</button>`
+          : t.role === 'member' ? `<button class="btn btn-glass btn-block" data-role="admin" data-id="${t.id}">Make Leader</button>`
+          : `<button class="btn btn-glass btn-block" data-role="member" data-id="${t.id}">Remove as Leader</button>`}
+        ${t.id !== state.profile.id && t.role !== 'pending' ? `<button class="btn btn-danger-ghost btn-block" data-role="pending" data-id="${t.id}">Remove Access</button>` : ''}
+      </div></div>`).join('') : `<p class="empty">${empty}</p>`}</div>`;
   const m = fill(rid, `
-    <p class="muted">People join by making a profile and typing the church CCLI login. You can remove anyone's access here at any time.</p>
+    <p class="muted">Tap <b>Set Roles</b> to choose what each person does (Bass, Vocals, Pastor…). Leaders can edit songs and services; team members can view.</p>
     ${group('Leaders', team.filter(t => t.role === 'admin'), 'None')}
     ${group('Team', team.filter(t => t.role === 'member'), 'No one yet.')}
     ${group('Waiting / No Access', team.filter(t => t.role === 'pending'), 'No one is waiting.')}`);
   m?.addEventListener('click', async e => {
+    const r = e.target.closest('[data-roles]');
+    if (r) return rolesSheet(team.find(t => t.id === r.dataset.roles));
     const b = e.target.closest('[data-role]'); if (!b) return;
     const who = team.find(t => t.id === b.dataset.id);
     const q = { admin: `Make ${who.full_name} a leader? Leaders can add songs, plan services, message the team and manage people.`,
@@ -811,6 +874,46 @@ async function viewTeam() {
       pending: `Remove ${who.full_name}'s access? They won't be able to see anything until they unlock again.` }[b.dataset.role];
     if (!(await askYesNo(q, 'Yes', b.dataset.role === 'pending'))) return;
     try { await api.team.setRole(who.id, b.dataset.role); toast('Done!'); viewTeam(); } catch (err) { toast(err.message, 'bad'); }
+  });
+}
+
+function rolesSheet(person) {
+  const chosen = new Set(person.positions || []);
+  const btn = r => `<button type="button" class="role-btn" data-r="${esc(r)}" aria-pressed="false">${I.check}<span>${esc(r)}</span></button>`;
+  sheet(`Roles for ${firstName(person.full_name)}`, `
+    <p class="muted">Tap every role ${esc(firstName(person.full_name))} has. Tap again to remove it.</p>
+    <div class="role-grid">${sortRoles([...new Set([...ROLES, ...chosen])]).map(btn).join('')}</div>
+    <div class="add-role">
+      <input class="input" id="newrole" maxlength="40" placeholder="Another role (e.g. Violin)" aria-label="Another role">
+      <button type="button" class="btn btn-glass" id="addrole">${I.plus}<span>Add</span></button>
+    </div>
+    <button class="btn btn-primary btn-block btn-lg" id="saveroles">Save Roles</button>`, el => {
+    const draw = () => $$('.role-btn', el).forEach(b => { const on = chosen.has(b.dataset.r); b.classList.toggle('on', on); b.setAttribute('aria-pressed', on); });
+    $('.role-grid', el).addEventListener('click', e => {
+      const b = e.target.closest('.role-btn'); if (!b) return;
+      chosen.has(b.dataset.r) ? chosen.delete(b.dataset.r) : chosen.add(b.dataset.r);
+      draw();
+    });
+    const addRole = () => {
+      const v = $('#newrole', el).value.trim().replace(/\s+/g, ' ');
+      if (!v) return;
+      const existing = $$('.role-btn', el).find(b => b.dataset.r.toLowerCase() === v.toLowerCase());
+      if (existing) chosen.add(existing.dataset.r);
+      else { $('.role-grid', el).insertAdjacentHTML('beforeend', btn(v)); chosen.add(v); }
+      $('#newrole', el).value = '';
+      draw();
+    };
+    $('#addrole', el).onclick = addRole;
+    $('#newrole', el).addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); addRole(); } });
+    $('#saveroles', el).onclick = e => busy(e.currentTarget, async () => {
+      try {
+        const list = sortRoles([...chosen]);
+        await api.team.setPositions(person.id, list);
+        if (person.id === state.profile.id) state.profile.positions = list;
+        closeSheet(); toast('Roles saved!'); viewTeam();
+      } catch (err) { toast(err.message, 'bad'); }
+    });
+    draw();
   });
 }
 

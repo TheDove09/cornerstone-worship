@@ -1,6 +1,6 @@
 // Demo backend — runs entirely on this device so you can try the app
 // before setting up Supabase. Any email/password works. Nothing is shared.
-const KEY = 'cmc-demo-v1';
+const KEY = 'cmc-demo-v2';
 const id = () => (crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2) + Date.now());
 const pad = n => String(n).padStart(2, '0');
 const ymd = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
@@ -20,13 +20,14 @@ function seed() {
     s('How Great Is Our God', 'Chris Tomlin', '4348399', 'C', 78),
     s('Amazing Grace (My Chains Are Gone)', 'Chris Tomlin', '4768151', 'G', 68, '3/4'),
   ];
-  const me = { id: id(), full_name: '', email: '', role: 'admin', created_at: new Date().toISOString() };
+  const me = { id: id(), full_name: '', email: '', role: 'admin', positions: [], created_at: new Date().toISOString() };
   const team = [
     me,
-    { id: id(), full_name: 'Linda (Co-Leader)', email: 'linda@example.com', role: 'admin' },
-    { id: id(), full_name: 'Harold — Bass', email: 'harold@example.com', role: 'member' },
-    { id: id(), full_name: 'Grace — Vocals', email: 'grace@example.com', role: 'member' },
-    { id: id(), full_name: 'Tom — Drums', email: 'tom@example.com', role: 'pending' },
+    { id: id(), full_name: 'Linda (Co-Leader)', email: 'linda@example.com', role: 'admin', positions: ['Worship Leader', 'Vocals'] },
+    { id: id(), full_name: 'Harold Jenkins', email: 'harold@example.com', role: 'member', positions: ['Bass'] },
+    { id: id(), full_name: 'Grace Miller', email: 'grace@example.com', role: 'member', positions: ['Vocals', 'Piano / Keys'] },
+    { id: id(), full_name: 'Pastor Dave', email: 'dave@example.com', role: 'member', positions: ['Pastor'] },
+    { id: id(), full_name: 'Tom Reed', email: 'tom@example.com', role: 'pending', positions: ['Drums'] },
   ];
   const svc1 = { id: id(), service_date: sundayIn(0), title: 'Sunday Service', notes: 'Please arrive by 8:30 AM for sound check.', created_at: new Date().toISOString(),
     items: [
@@ -111,7 +112,7 @@ export function createDemoApi() {
     },
     messages: {
       list: async () => { await wait(); return clone(db.messages).sort((a, b) => b.created_at.localeCompare(a.created_at)); },
-      post: async m => { const n = { ...m, id: id(), created_at: new Date().toISOString() }; db.messages.push(n); save(); return clone(n); },
+      post: async m => { const n = { ...m, recipient_ids: m.recipient_ids && m.recipient_ids.length ? m.recipient_ids : null, author_id: db.meId, id: id(), created_at: new Date().toISOString() }; db.messages.push(n); save(); return clone(n); },
       remove: async mid => { db.messages = db.messages.filter(m => m.id !== mid); save(); },
     },
     team: {
@@ -122,6 +123,7 @@ export function createDemoApi() {
           throw new Error('There must always be at least one leader.');
         t.role = role; save();
       },
+      setPositions: async (tid, positions) => { db.team.find(x => x.id === tid).positions = positions; save(); },
     },
   };
 }
