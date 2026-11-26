@@ -444,3 +444,5 @@ body.selecting .page { padding-bottom: calc(200px + var(--safe-b)); }
 
 /* "hidden" always wins over layout rules */
 [hidden] { display: none !important; }
+
+.ss-alt { display: block; margin: 8px 0 4px; font-size: .85rem; }

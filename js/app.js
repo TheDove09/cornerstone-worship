@@ -141,9 +141,21 @@ function setlistText(svc) {
   lines.push('', `— ${CONFIG.CHURCH_NAME} ${CONFIG.TEAM_NAME}`);
   return lines.join('\n');
 }
-const songSelectUrl = s => s.songselect_url ||
-  (s.ccli_number ? `https://songselect.ccli.com/search/results?search=${encodeURIComponent(s.ccli_number)}`
-                 : `https://songselect.ccli.com/search/results?search=${encodeURIComponent(s.title)}`);
+// SongSelect web addresses. Chord charts live at /songs/<CCLI #>/<song-name>/viewchordsheet
+const SS = 'https://songselect.ccli.com';
+const ssSlug = t => String(t || '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+  .replace(/&/g, ' ').replace(/[^a-z0-9\s-]/g, '').trim().replace(/[\s-]+/g, '-');
+const songSearchUrl = s => `${SS}/search/results?search=${encodeURIComponent(s.ccli_number || s.title)}`;
+const songSelectUrl = s => {
+  const saved = String(s.songselect_url || '').match(/^https:\/\/songselect\.ccli\.com\/songs\/(\d+)\/([a-z0-9-]+)/i);
+  if (saved) return `${SS}/songs/${saved[1]}/${saved[2].toLowerCase()}/viewchordsheet`;          // exact link someone pasted
+  const n = String(s.ccli_number || '').replace(/\D/g, '');
+  if (n && ssSlug(s.title)) return `${SS}/songs/${n}/${ssSlug(s.title)}/viewchordsheet`;           // built from CCLI # + title
+  return songSearchUrl(s);                                                                         // no CCLI #: search by title
+};
+const songSelectLinks = (s, primary) => `
+  <a class="btn ${primary ? 'btn-primary' : 'btn-glass'} btn-block" href="${esc(songSelectUrl(s))}" target="_blank" rel="noopener">${I.ext}<span>${s.ccli_number || s.songselect_url ? 'Chord Chart in SongSelect' : 'Find in SongSelect'}</span></a>
+  ${s.ccli_number || s.songselect_url ? `<a class="link center ss-alt" href="${esc(songSearchUrl(s))}" target="_blank" rel="noopener">Wrong song? Search SongSelect instead</a>` : ''}`;
 
 // ── page frame ─────────────────────────────────────────────────────
 const TABS = [
@@ -649,7 +661,7 @@ async function viewSong(id) {
         <div class="fact"><span>CCLI #</span><b>${esc(s.ccli_number || '—')}</b></div>
       </div>
       <a class="btn ${s.chart ? 'btn-primary' : 'btn-glass'} btn-block btn-lg" href="#/chart/${s.id}">${I.chart}<span>${s.chart ? 'Chord Chart (any key)' : 'Chord Chart'}</span></a>
-      <a class="btn ${s.chart ? 'btn-glass' : 'btn-primary'} btn-block" href="${esc(songSelectUrl(s))}" target="_blank" rel="noopener">${I.ext}<span>Open in SongSelect</span></a>
+      ${songSelectLinks(s, !s.chart)}
       <p class="muted small center">Full sheet music opens in SongSelect using the church CCLI account.</p>
       <button class="btn btn-glass btn-block" id="sharekey">${I.share}<span>Share the Key With the Team</span></button>
     </section>
@@ -1288,7 +1300,7 @@ function chartScreen(rid, { song, key, setKey, nav, onKey }) {
       : `<section class="glass card"><p class="empty">There's no chord chart for this song yet.</p>
         <div class="stack">
           ${isAdmin() ? `<button class="btn btn-primary btn-block" id="addchart">${I.plus}<span>Add a Chord Chart</span></button>` : ''}
-          <a class="btn btn-glass btn-block" href="${esc(songSelectUrl(song))}" target="_blank" rel="noopener">${I.ext}<span>Open in SongSelect</span></a>
+          ${songSelectLinks(song, !isAdmin())}
         </div></section>`}
     ${nav ? `<div class="play-nav">
         ${nav.i > 0 ? `<a class="btn btn-glass" href="#/play/${nav.svcId}/${nav.i - 1}"><span>${I.back} Previous</span><small>${esc(nav.prevTitle)}</small></a>` : '<span></span>'}
