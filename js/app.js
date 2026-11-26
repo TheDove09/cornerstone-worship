@@ -65,7 +65,9 @@ const I = {
 };
 const LOGO = `<img class="logo-mark" src="icons/logo-mark.png" alt="" aria-hidden="true">`;
 
-const state = { profile: null, renderId: 0, quiet: false, stale: false, unread: false, updateReady: false };
+const state = { profile: null, security: null, renderId: 0, quiet: false, stale: false, unread: false, updateReady: false, pendingJoin: null, joinError: '', codeSentAt: 0, offerPasskey: false };
+// Not allowed into the team screens yet (signed out, not unlocked, or sign-in not confirmed).
+const locked = () => !state.profile || state.profile.role === 'pending' || (state.security?.required && !state.security?.verified);
 const isAdmin = () => state.profile?.role === 'admin';
 const root = $('#app');
 
@@ -279,6 +281,11 @@ function viewSignUp() {
           viewLogin(`<div class="alert info">Almost done! Check your email and tap the link to confirm, then sign in here.</div>`);
           return;
         }
+        const sec = await api.security();
+        if (sec.required && !sec.verified) {
+          state.pendingJoin = { email: v('ccli_email'), password: f.ccli_password.value };
+          await start(); return;
+        }
         try { await api.joinTeam(v('ccli_email'), f.ccli_password.value); }
         catch (err) { await start(); $('#err') && ($('#err').innerHTML = errBox(err.message)); return; }
         await start();
@@ -294,7 +301,7 @@ function viewUnlock() {
     <p class="muted">Type the church's CCLI login to unlock the team app. You only have to do this once.</p>
     <form id="f" class="stack" novalidate>
       ${ccliFields()}
-      <div id="err"></div>
+      <div id="err">${state.joinError ? errBox(state.joinError) : ''}</div>
       <button class="btn btn-primary btn-block btn-lg">Unlock</button>
     </form>
     <button class="btn btn-ghost btn-block" id="out">Sign Out</button>`);
@@ -323,6 +330,120 @@ function newPasswordSheet() {
         catch (err) { $('#nperr', el).innerHTML = errBox(err.message); }
       });
     };
+  });
+}
+
+// ── CONFIRM IT'S YOU (two-step sign-in) ───────────────────────────
+const deviceName = () => {
+  const u = navigator.userAgent;
+  return /iPhone/.test(u) ? 'iPhone' : /iPad/.test(u) ? 'iPad' : /Android/.test(u) ? 'Android phone'
+    : /Macintosh/.test(u) ? 'Mac' : /Windows/.test(u) ? 'Windows computer' : 'This device';
+};
+
+// A 6-digit code form inside `box`. Sends a code (unless one was just sent) and calls onDone when confirmed.
+function mountCodeForm(box, onDone, { fresh = false } = {}) {
+  box.innerHTML = `
+    <p class="muted" id="sentmsg">Sending a 6-digit code to your email…</p>
+    <form class="stack" id="codeform" novalidate>
+      <label class="field"><span>6-digit code</span>
+        <input class="input code-input" name="code" inputmode="numeric" autocomplete="one-time-code" placeholder="••••••" aria-describedby="sentmsg"></label>
+      <div id="codeerr"></div>
+      <button class="btn btn-primary btn-block btn-lg" id="codego">Confirm</button>
+      <button type="button" class="btn btn-glass btn-block" id="resend">Send a New Code</button>
+    </form>`;
+  const f = $('#codeform', box), input = f.code, resend = $('#resend', box);
+  let timer = null;
+  const cooldown = secs => {
+    clearInterval(timer);
+    const tick = () => {
+      if (!resend.isConnected) return clearInterval(timer);
+      resend.disabled = secs > 0;
+      resend.textContent = secs > 0 ? `Send a New Code (${secs})` : 'Send a New Code';
+      if (secs-- <= 0) clearInterval(timer);
+    };
+    tick(); timer = setInterval(tick, 1000);
+  };
+  const send = async () => {
+    $('#codeerr', box).innerHTML = '';
+    try {
+      const r = await api.sendCode();
+      state.codeSentAt = Date.now();
+      $('#sentmsg', box).innerHTML = `We emailed a 6-digit code to <b>${esc(r.to)}</b>. It can take a minute to arrive — check your spam folder too.`;
+      cooldown(45);
+      input.focus();
+    } catch (e) {
+      $('#sentmsg', box).textContent = "We couldn't send a code just now.";
+      $('#codeerr', box).innerHTML = errBox(e.message);
+      const wait = e.message.match(/wait (\d+) seconds/);
+      cooldown(wait ? +wait[1] : 0);
+    }
+  };
+  resend.onclick = send;
+  input.addEventListener('input', () => {
+    const digits = input.value.replace(/\D/g, '').slice(0, 6);
+    if (input.value !== digits) input.value = digits;
+    if (digits.length === 6) f.requestSubmit();
+  });
+  f.onsubmit = async e => {
+    e.preventDefault();
+    const code = input.value.replace(/\D/g, '');
+    if (code.length !== 6) return ($('#codeerr', box).innerHTML = errBox('Please type all 6 numbers.'));
+    await busy($('#codego', box), async () => {
+      try { await api.verifyCode(code); clearInterval(timer); await onDone(); }
+      catch (err) { $('#codeerr', box).innerHTML = errBox(err.message); input.select(); }
+    });
+  };
+  const recent = Date.now() - state.codeSentAt < 45000;
+  if (fresh || !recent) send();
+  else { $('#sentmsg', box).textContent = 'We already emailed you a code. Type it below, or ask for a new one.'; cooldown(Math.ceil((45000 - (Date.now() - state.codeSentAt)) / 1000)); }
+}
+
+async function viewConfirm() {
+  const canPasskey = state.security.passkeys > 0 && await api.passkeyReady();
+  authShell(`
+    <h2>Confirm it's you</h2>
+    ${canPasskey ? `
+      <p class="muted">Use Face ID or Touch ID to finish signing in.</p>
+      <button class="btn btn-primary btn-block btn-lg" id="pk">${I.lock}<span>Use Face ID / Touch ID</span></button>
+      <div id="pkerr"></div>
+      <div class="or"><span>or</span></div>
+      <div id="codebox"><button class="btn btn-glass btn-block" id="emailme">Email Me a Code Instead</button></div>`
+    : `<p class="muted">For your security, we email you a code each time you sign in.</p><div id="codebox"></div>`}
+    <button class="btn btn-ghost btn-block" id="out">Sign Out</button>`);
+  const done = async method => { if (method === 'email') state.offerPasskey = true; await start(); };
+  $('#out').onclick = async () => { await api.signOut(); state.profile = null; viewLogin(); };
+  if (canPasskey) {
+    $('#pk').onclick = e => busy(e.currentTarget, async () => {
+      try { await api.usePasskey(); await done('passkey'); }
+      catch (err) { $('#pkerr').innerHTML = errBox(err.message); }
+    });
+    $('#emailme').onclick = () => mountCodeForm($('#codebox'), () => done('email'), { fresh: true });
+  } else {
+    mountCodeForm($('#codebox'), () => done('email'));
+  }
+}
+
+async function offerPasskeyIfUseful() {
+  if (!state.offerPasskey) return;
+  state.offerPasskey = false;
+  const memo = 'pkOffer:' + state.profile.id;
+  if (!state.security?.required || state.security.passkeys > 0 || store.get(memo) === 'no' || !(await api.passkeyReady())) return;
+  sheet('Sign in faster next time?', `
+    <p class="big-q">Use Face ID or Touch ID instead of waiting for an email code.</p>
+    <div class="stack">
+      <button class="btn btn-primary btn-block btn-lg" id="pkyes">${I.lock}<span>Set Up Face ID / Touch ID</span></button>
+      <div id="pkofferr"></div>
+      <button class="btn btn-ghost btn-block" id="pkno">Not Now</button>
+    </div>`, el => {
+    $('#pkno', el).onclick = () => { store.set(memo, 'no'); closeSheet(); };
+    $('#pkyes', el).onclick = e => busy(e.currentTarget, async () => {
+      try {
+        await api.addPasskey(deviceName());
+        state.security = await api.security();
+        closeSheet(); toast('Face ID / Touch ID is set up! Use it next time you sign in.');
+        if ($('#security')) drawSecurity(state.renderId);   // update the list if the Me page is open
+      } catch (err) { $('#pkofferr', el).innerHTML = errBox(err.message); }
+    });
   });
 }
 
@@ -857,6 +978,8 @@ async function viewMe() {
           : `<ol class="howto"><li><b>Android:</b> tap the <b>⋮</b> menu in Chrome, then <b>Install app</b> or <b>Add to Home screen</b>.</li><li><b>Computer:</b> click the install icon at the right end of the address bar in Chrome or Edge.</li></ol>`}`}
     </section>
 
+    <section class="glass card" id="security"><div class="eyebrow">Sign-In Security</div><div class="loading small-load"><span class="spinner"></span></div></section>
+
     ${isAdmin() ? `<section class="glass card">
       <div class="eyebrow">Leader Settings</div>
       <a class="btn btn-glass btn-block" href="#/team">${I.people}<span>Team Members</span></a>
@@ -869,6 +992,7 @@ async function viewMe() {
     <p class="muted small center">${esc(CONFIG.CHURCH_NAME)} · ${esc(CONFIG.TEAM_NAME)}</p>`);
   if (!m) return;
   $$('[data-size]', m).forEach(b => b.onclick = () => { store.set('textSize', b.dataset.size); applyTextSize(); viewMe(); });
+  drawSecurity(rid);
   $('#install')?.addEventListener('click', async () => { await installPrompt.prompt(); installPrompt = null; viewMe(); });
   $('#out').onclick = async () => { if (await askYesNo('Sign out of the app?', 'Yes, Sign Out')) { await api.signOut(); state.profile = null; viewLogin(); } };
   $('#rename').onclick = () => sheet('Change my name', `<form id="nf" class="stack"><label class="field"><span>Your name</span><input class="input" name="n" value="${esc(p.full_name)}" required></label>
@@ -896,6 +1020,54 @@ async function viewMe() {
       });
     };
   }));
+}
+
+async function drawSecurity(rid) {
+  let sec, keys = [], ready = false;
+  try { [sec, keys, ready] = await Promise.all([api.security(), api.listPasskeys(), api.passkeyReady()]); }
+  catch (e) { const box = $('#security'); if (box) box.innerHTML = `<div class="eyebrow">Sign-In Security</div>${errBox(e.message)}`; return; }
+  state.security = sec;
+  const box = $('#security');
+  if (!box || rid !== state.renderId) return;
+  const when = d => d ? new Date(d).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : '';
+  box.innerHTML = `
+    <div class="eyebrow">Sign-In Security</div>
+    ${sec.required
+      ? `<p class="ok-line">${I.check} Every sign-in is confirmed with an email code or Face ID / Touch ID.</p>`
+      : `<p class="muted">Email codes at sign-in are <b>off</b>.${isAdmin() ? '' : ' A leader can turn them on.'}</p>`}
+    ${sec.required ? `
+      <div class="pk-list">${keys.length ? keys.map(k => `<div class="pk-row">
+          <div class="row-main"><div class="row-title">${I.lock} ${esc(k.device_name || 'Device')}</div>
+          <div class="row-sub">Added ${esc(when(k.created_at))}${k.last_used_at ? ` · last used ${esc(when(k.last_used_at))}` : ''}</div></div>
+          <button class="btn btn-danger-ghost btn-sm" data-pk="${esc(k.id)}">Remove</button></div>`).join('')
+        : `<p class="muted small">No Face ID / Touch ID set up yet. You'll get an email code each time you sign in.</p>`}</div>
+      ${ready ? `<button class="btn btn-glass btn-block" id="addpk">${I.lock}<span>Set Up Face ID / Touch ID on This ${esc(deviceName() === 'This device' ? 'Device' : deviceName())}</span></button>` : ''}` : ''}
+    ${isAdmin() ? (sec.required
+      ? `<button class="btn btn-danger-ghost btn-block" id="tfaoff">Turn Off Email Codes</button>`
+      : `<button class="btn btn-primary btn-block" id="tfaon">${I.lock}<span>Turn On Email Codes for Everyone</span></button>
+         <p class="muted small">We'll email you a test code first, to make sure emails are arriving.</p>`) : ''}`;
+  $('#addpk', box)?.addEventListener('click', e => busy(e.currentTarget, async () => {
+    try { await api.addPasskey(deviceName()); toast('Face ID / Touch ID is set up!'); drawSecurity(rid); }
+    catch (err) { toast(err.message, 'bad'); }
+  }));
+  box.onclick = async e => {   // (onclick, not addEventListener: this section redraws itself)
+    const b = e.target.closest('[data-pk]'); if (!b) return;
+    if (!(await askYesNo('Remove Face ID / Touch ID for this device? You can set it up again any time.', 'Yes, Remove It', true))) return;
+    try { await api.removePasskey(b.dataset.pk); toast('Removed.'); drawSecurity(rid); } catch (err) { toast(err.message, 'bad'); }
+  };
+  $('#tfaon', box)?.addEventListener('click', () => {
+    sheet('Turn on email codes', `<p class="muted">First let's make sure emails work. We'll send a code to your email — type it below.</p><div id="tfabox"></div>`, el => {
+      mountCodeForm($('#tfabox', el), async () => {
+        await api.setRequire2fa(true);
+        state.security = await api.security();
+        closeSheet(); toast('Email codes are on for everyone.'); state.offerPasskey = true; offerPasskeyIfUseful(); drawSecurity(rid);
+      }, { fresh: true });
+    });
+  });
+  $('#tfaoff', box)?.addEventListener('click', async () => {
+    if (!(await askYesNo('Turn off email codes? People will only need their password to sign in.', 'Yes, Turn Off', true))) return;
+    try { await api.setRequire2fa(false); toast('Email codes are off.'); drawSecurity(rid); } catch (err) { toast(err.message, 'bad'); }
+  });
 }
 
 async function viewTeam() {
@@ -1081,7 +1253,7 @@ async function viewPlay(svcId, idx) {
 const userIsBusy = () => !!$('.sheet-wrap') || /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || '') || !!$('#q')?.value;
 
 async function refreshQuietly() {
-  if (!state.profile || state.profile.role === 'pending') return;
+  if (locked()) return;
   if (userIsBusy()) { state.stale = true; return; }
   state.stale = false;
   const y = window.scrollY;
@@ -1097,7 +1269,7 @@ function applyPending() {
 
 let liveTimer = null;
 function onLiveChange(table, payload) {
-  if (!state.profile || state.profile.role === 'pending') return;
+  if (locked()) return;
   if (table === 'messages' && payload.eventType === 'INSERT' && payload.new?.author_id !== state.profile.id) {
     if (location.hash !== '#/messages') state.unread = true;
     toast(`New message: ${payload.new?.title || 'from a leader'}`);
@@ -1116,7 +1288,7 @@ function onLiveChange(table, payload) {
 
 let stopLive = null;
 function startLive() {
-  if (stopLive || !state.profile || state.profile.role === 'pending') return;
+  if (stopLive || locked()) return;
   stopLive = api.subscribe(onLiveChange);
 }
 function stopLiveUpdates() { if (stopLive) { stopLive(); stopLive = null; } }
@@ -1137,7 +1309,7 @@ const routes = [
   [/^\/play\/([\w-]+)\/(\d+)$/, viewPlay],
 ];
 function route() {
-  if (!state.profile || state.profile.role === 'pending') return;
+  if (locked()) return;
   closeSheet();
   const path = location.hash.replace(/^#/, '');
   for (const [re, fn] of routes) { const m = path.match(re); if (m) return fn(...m.slice(1)).catch(console.error); }
@@ -1148,18 +1320,28 @@ function applyTextSize() { document.documentElement.dataset.size = store.get('te
 async function start() {
   const session = await api.session();
   if (!session) { state.profile = null; return viewLogin(); }
-  try { state.profile = await api.me(); }
+  try { [state.profile, state.security] = await Promise.all([api.me(), api.security()]); }
   catch (e) { authShell(`${errBox(e.message)}<button class="btn btn-primary btn-block" onclick="location.reload()">Try Again</button>`); return; }
   if (!state.profile) return viewLogin();
+  if (state.security.required && !state.security.verified) { stopLiveUpdates(); return viewConfirm(); }
+  if (state.pendingJoin && state.profile.role === 'pending') {
+    const j = state.pendingJoin; state.pendingJoin = null; state.joinError = '';
+    try {
+      await api.joinTeam(j.email, j.password);
+      state.profile = await api.me();
+      toast(`Welcome to the team, ${firstName(state.profile.full_name)}!`);
+    } catch (err) { state.joinError = err.message; }
+  }
   if (state.profile.role === 'pending') { stopLiveUpdates(); return viewUnlock(); }
   startLive();
   route();
+  offerPasskeyIfUseful();
 }
 
 applyTextSize();
 api.onAuth(event => {
   if (event === 'PASSWORD_RECOVERY') setTimeout(newPasswordSheet, 300);
-  if (event === 'SIGNED_OUT') { stopLiveUpdates(); state.profile = null; viewLogin(); }
+  if (event === 'SIGNED_OUT') { stopLiveUpdates(); state.profile = null; state.security = null; state.codeSentAt = 0; viewLogin(); }
 });
 window.addEventListener('hashchange', route);
 start();

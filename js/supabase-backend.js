@@ -25,12 +25,29 @@ function normalizeService(s) {
   return { ...rest, items };
 }
 
+const WEBAUTHN = 'https://cdn.jsdelivr.net/npm/@simplewebauthn/browser@13.1.0/+esm';
+function passkeyError(e) {
+  if (e?.name === 'NotAllowedError') return new Error("Face ID / Touch ID was cancelled or didn't match. Try again, or use an email code.");
+  if (e?.name === 'InvalidStateError') return new Error('This device is already set up for Face ID / Touch ID.');
+  return e;
+}
+
 export function createSupabaseApi(cfg) {
   const sb = createClient(cfg.SUPABASE_URL, cfg.SUPABASE_ANON_KEY, {
     auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
   });
   const appUrl = () => location.origin + location.pathname;
   const uid = async () => (await sb.auth.getUser()).data.user?.id;
+  // Calls the sign-in guard server program (sends codes, checks Face ID / Touch ID).
+  const guard = async (action, extra = {}) => {
+    const { data, error } = await sb.functions.invoke('auth-guard', { body: { action, ...extra } });
+    if (error) {
+      let msg = '';
+      try { msg = (await error.context.json()).error; } catch {}
+      throw new Error(msg || friendly(error));
+    }
+    return data;
+  };
 
   return {
     // Live updates: the server tells the app the moment team data changes.
@@ -56,6 +73,33 @@ export function createSupabaseApi(cfg) {
     async signOut() { await sb.auth.signOut(); },
     async resetPassword(email) { must(await sb.auth.resetPasswordForEmail(email, { redirectTo: appUrl() })); },
     async updatePassword(password) { must(await sb.auth.updateUser({ password })); },
+
+    // ── two-step sign-in ──
+    async security() {
+      const rows = must(await sb.rpc('my_security'));
+      return rows?.[0] || { required: false, verified: false, passkeys: 0 };
+    },
+    sendCode: () => guard('send-code'),
+    verifyCode: code => guard('verify-code', { code }),
+    async passkeyReady() {
+      try { return !!window.PublicKeyCredential && await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable(); }
+      catch { return false; }
+    },
+    async addPasskey(deviceName) {
+      const { startRegistration } = await import(WEBAUTHN);
+      const optionsJSON = await guard('passkey-register-options');
+      let response; try { response = await startRegistration({ optionsJSON }); } catch (e) { throw passkeyError(e); }
+      return guard('passkey-register-verify', { response, deviceName });
+    },
+    async usePasskey() {
+      const { startAuthentication } = await import(WEBAUTHN);
+      const optionsJSON = await guard('passkey-login-options');
+      let response; try { response = await startAuthentication({ optionsJSON }); } catch (e) { throw passkeyError(e); }
+      return guard('passkey-login-verify', { response });
+    },
+    listPasskeys: async () => must(await sb.from('passkeys').select('id, device_name, created_at, last_used_at').order('created_at')),
+    removePasskey: async id => { must(await sb.from('passkeys').delete().eq('id', id)); },
+    setRequire2fa: async on => { must(await sb.rpc('set_require_2fa', { p_on: on })); },
 
     async me() {
       const id = await uid();

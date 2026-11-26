@@ -391,3 +391,15 @@ details.more summary { cursor: pointer; color: var(--teal); font-weight: 700; mi
 .chart-tools .btn-sm { min-height: 44px; }
 
 .choice-note { margin: -4px 4px 6px; }
+
+/* two-step sign-in */
+.code-input { font-size: 2rem; font-weight: 800; letter-spacing: .45em; text-align: center; padding-left: .45em; font-variant-numeric: tabular-nums; }
+.or { display: flex; align-items: center; gap: 12px; color: var(--muted); margin: 16px 0; font-size: .85rem; }
+.or::before, .or::after { content: ''; flex: 1; height: 1px; background: rgba(255,255,255,.15); }
+.pk-list { display: flex; flex-direction: column; gap: 10px; margin: 6px 0 12px; }
+.pk-row { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-radius: 16px; background: rgba(0,0,0,.22); border: 1px solid rgba(255,255,255,.1); }
+.pk-row .row-title { display: flex; align-items: center; gap: 6px; }
+.pk-row .row-title .ic { width: 18px; height: 18px; color: var(--teal); }
+#security .ok-line { margin-bottom: 10px; }
+#security > .btn-block + .btn-block, #security > .pk-list + .btn-block { margin-top: 10px; }
+.small-load { padding: 16px 0; }
